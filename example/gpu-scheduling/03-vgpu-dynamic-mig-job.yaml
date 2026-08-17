@@ -1,0 +1,32 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: vgpu-dynamic-mig-job
+spec:
+  schedulerName: volcano
+  minAvailable: 1
+  tasks:
+  - name: inference
+    replicas: 1
+    template:
+      metadata:
+        annotations:
+          volcano.sh/vgpu-mode: mig
+      spec:
+        restartPolicy: OnFailure
+        containers:
+        - name: cuda
+          image: nvidia/cuda:12.4.1-base-ubuntu22.04
+          command:
+          - bash
+          - -lc
+          - nvidia-smi -L && sleep 3600
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+              volcano.sh/vgpu-number: "1"
+              volcano.sh/vgpu-memory: "8192"
+            limits:
+              volcano.sh/vgpu-number: "1"
+              volcano.sh/vgpu-memory: "8192"

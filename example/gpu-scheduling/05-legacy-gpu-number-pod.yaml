@@ -1,0 +1,20 @@
+# Deprecated since Volcano v1.9. Use nvidia.com/gpu or Volcano vGPU for new deployments.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: legacy-gpu-number
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: cuda
+    image: nvidia/cuda:12.4.1-base-ubuntu22.04
+    command:
+    - bash
+    - -lc
+    - nvidia-smi && sleep 3600
+    resources:
+      requests:
+        volcano.sh/gpu-number: "1"
+      limits:
+        volcano.sh/gpu-number: "1"

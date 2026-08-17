@@ -1,0 +1,35 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: vgpu-hami-core-job
+spec:
+  schedulerName: volcano
+  minAvailable: 2
+  tasks:
+  - name: inference
+    replicas: 2
+    template:
+      metadata:
+        annotations:
+          volcano.sh/vgpu-mode: hami-core
+          volcano.sh/vgpu-podgroup-policy: spread
+      spec:
+        restartPolicy: OnFailure
+        containers:
+        - name: cuda
+          image: nvidia/cuda:12.4.1-base-ubuntu22.04
+          command:
+          - bash
+          - -lc
+          - nvidia-smi && sleep 3600
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+              volcano.sh/vgpu-number: "1"
+              volcano.sh/vgpu-memory: "4096"
+              volcano.sh/vgpu-cores: "50"
+            limits:
+              volcano.sh/vgpu-number: "1"
+              volcano.sh/vgpu-memory: "4096"
+              volcano.sh/vgpu-cores: "50"

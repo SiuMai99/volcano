@@ -1,0 +1,39 @@
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: gpu-full
+spec:
+  reclaimable: true
+  capability:
+    cpu: "64"
+    memory: 256Gi
+    nvidia.com/gpu: "8"
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: full-gpu-job
+spec:
+  schedulerName: volcano
+  queue: gpu-full
+  minAvailable: 2
+  tasks:
+  - name: worker
+    replicas: 2
+    template:
+      spec:
+        restartPolicy: OnFailure
+        containers:
+        - name: cuda
+          image: nvidia/cuda:12.4.1-base-ubuntu22.04
+          command:
+          - bash
+          - -lc
+          - nvidia-smi && sleep 3600
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"

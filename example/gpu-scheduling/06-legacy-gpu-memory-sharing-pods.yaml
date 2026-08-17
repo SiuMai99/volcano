@@ -1,0 +1,40 @@
+# Deprecated since Volcano v1.9. This requires deviceshare.GPUSharingEnable=true.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: legacy-gpu-memory-a
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: cuda
+    image: nvidia/cuda:12.4.1-base-ubuntu22.04
+    command:
+    - bash
+    - -lc
+    - nvidia-smi && sleep 3600
+    resources:
+      requests:
+        volcano.sh/gpu-memory: "2048"
+      limits:
+        volcano.sh/gpu-memory: "2048"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: legacy-gpu-memory-b
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: cuda
+    image: nvidia/cuda:12.4.1-base-ubuntu22.04
+    command:
+    - bash
+    - -lc
+    - nvidia-smi && sleep 3600
+    resources:
+      requests:
+        volcano.sh/gpu-memory: "2048"
+      limits:
+        volcano.sh/gpu-memory: "2048"

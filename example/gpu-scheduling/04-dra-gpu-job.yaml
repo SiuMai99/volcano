@@ -1,0 +1,60 @@
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: gpu-dra
+spec:
+  reclaimable: true
+  capability:
+    cpu: "64"
+    memory: 256Gi
+    deviceclass/gpu.nvidia.com: "8"
+  deserved:
+    deviceclass/gpu.nvidia.com: "4"
+  guarantee:
+    resource:
+      deviceclass/gpu.nvidia.com: "1"
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: gpu-template
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu-request
+        exactly:
+          deviceClassName: gpu.nvidia.com
+          allocationMode: ExactCount
+          count: 1
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: dra-gpu-job
+spec:
+  schedulerName: volcano
+  queue: gpu-dra
+  minAvailable: 1
+  tasks:
+  - name: worker
+    replicas: 1
+    template:
+      spec:
+        resourceClaims:
+        - name: gpu
+          resourceClaimTemplateName: gpu-template
+        restartPolicy: OnFailure
+        containers:
+        - name: cuda
+          image: nvidia/cuda:12.4.1-base-ubuntu22.04
+          command:
+          - bash
+          - -lc
+          - nvidia-smi && sleep 3600
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            claims:
+            - name: gpu
