@@ -210,6 +210,37 @@ type DeviceTopologySpec struct {
 - 同一作用单元不得对同一 `resourceName + applyTo + scope` 提交互相矛盾的 policy；
 - 未配置 `DeviceTopology` 时，当前调度行为不变。
 
+#### `applyTo` 的量词与作用单元
+
+`domain.scope` 回答“使用哪一类物理拓扑域”，`applyTo` 回答“哪些 workload 成员必须共同满足该拓扑约束”。
+两者是正交维度，不能用 `scope=Node/Fabric` 推导 `applyTo=Pod/Group`。
+
+对一条 policy 选中的 Pod 集合 `S`，以及 Domain `d` 的显式成员集合 `Members(d)`：
+
+- `applyTo=Pod`：`∀ p ∈ S, ∃ d_p: Devices(p) ⊆ Members(d_p)`。每个 Pod 独立选择自己的
+  `d_p`，不同 Pod 可以位于不同 Node、LocalDomain 或 Fabric；
+- `applyTo=Group`：`∃ d, ∀ p ∈ S: Devices(p) ⊆ Members(d)`。整个作用单元共享同一个
+  Domain 选择；`scope=Node` 时意味着同一 Kubernetes Node 和同一本地 Device Domain，`scope=Fabric` 时意味着
+  所有成员都属于同一个显式 Fabric，而每个 Pod 仍须满足自己的本地 Domain 约束。
+
+policy 所在字段决定 Group 的外部边界，`applyTo` 决定该边界内是否联合求解：
+
+| policy 所在位置 | `applyTo` | 作用单元 |
+| --- | --- | --- |
+| `PodGroupSpec.DeviceTopology` | `Pod` | 对 PodGroup 中每个 selector 命中的 Pod 独立应用 |
+| `PodGroupSpec.DeviceTopology` | `Group` | 对整个 PodGroup 联合应用 |
+| `SubGroupPolicySpec.DeviceTopology` | `Pod` | 对每个实际 SubGroup 中的 Pod 独立应用 |
+| `SubGroupPolicySpec.DeviceTopology` | `Group` | 对每个实际生成的 SubGroup 分别联合应用 |
+
+例如，分布式训练可以同时声明 `applyTo=Pod + scope=Node`，要求每个 Pod 内的多张设备来自一个本地高速互联
+Domain；再声明 `applyTo=Group + scope=Fabric`，要求所有训练 Pod 位于同一个 scale-up Fabric。只保留前一条会允许
+不同 Pod 漂移到不同 Fabric；把前一条错误提升为 Group 约束，又会不必要地要求所有 Pod 位于同一 Node-local Domain。
+
+`applyTo=Group` 不改变现有 `JobReady/SubJobReady`、`minMember` 或 SubGroup readiness。`AdmissionSet` 仍是
+winning Statement 本轮新增的 Allocate operations；当 `minMember < replicas` 时，首次成功 handoff 为稳定
+`TopologyGroup` 建立 `GroupPlacementAnchor`，后续 admission wave 必须继续满足同一 anchor。Group 因此不等于
+“一次 Statement 中的 Pod 集合”，也不要求一次调度全部 replicas。
+
 ### 3.2 Public API 不暴露 allocationStrategy
 
 V3 删除首版 Public `allocationStrategy`/`allocationPolicy`。内部唯一策略是 deterministic Compact：
