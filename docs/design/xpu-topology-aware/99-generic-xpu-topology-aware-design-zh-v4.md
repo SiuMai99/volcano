@@ -222,7 +222,7 @@ feature gate 是进程启动参数，不能通过 scheduler ConfigMap 热更新�
 但移除 plugin、切换 Provider、改变 resource-to-Adapter owner 或 identity namespace 都是 drain 操作：仍有非终态 xPU policy、
 reservation、allocation、anchor 或 `ReconcilePending` 时必须拒绝新配置并继续使用上一份配置。禁用 gate 前必须先在旧配置下完成 drain，
 再统一重启 scheduler 与 admission；各 scheduler replica 必须使用相同 gate、plugin 参数和配置 digest。
-规范化后的 activation digest 至少覆盖 gate 状态、plugin 参数、Provider identity、descriptor source 以及 resource-to-Adapter owner，
+规范化后的 activation digest 至少覆盖 gate 状态、plugin 参数、固定 catalog 是否可读、Provider identity 以及 resource-to-Adapter owner，
 并进入 immutable topology view、Plan、Reservation 和 SchedulerEpoch。新 leader 的 digest 与未完成 owner/evidence 不一致时，
 必须暂停该 resource 的 hard 调度并进入恢复/人工 drain，不能用新配置解释旧 owner。
 
@@ -283,9 +283,9 @@ identity namespace 由 Provider/Adapter capability 报告并互相校验，不�
 | `xpu-topology.max-planning-attempts` | `3`，必须大于 0 | allocate integration；限制冲突后的完整 replan 次数 |
 | `xpu-topology.planning-timeout` | `50ms`，必须大于 0 | group planner；超时返回 `XPUTopologyPlanningBudgetExceeded` |
 
-这些是 scheduler plugin/runtime 参数，不承载 workload policy，也不承载具体 Device/Domain/Fabric ID。`domainClass` catalog 仍由
-第 5.1 节的 `ResourceTopologyDescriptor` 权威载体发布；一旦载体完成 API review，scheduler、webhook、controller、Provider 和
-Adapter 必须读取同一个 descriptor fingerprint，不能在 plugin arguments 中复制另一套 class 解释。
+这些是 scheduler plugin/runtime 参数，不承载 workload policy，也不承载具体 Device/Domain/Fabric ID。`domainClass` 只引用
+第 5.1 节定义的 Alpha 固定 catalog；scheduler、webhook、controller、Provider 和 Adapter 必须读取同一份 class 定义，不能在
+plugin arguments 中复制另一套 class 解释。
 
 Helm 安装或升级需要同时传 scheduler/admission gate，并用完整 scheduler 配置覆盖文件：
 
@@ -503,8 +503,7 @@ type DomainClassKey struct {
 {nvidia.com/gpu,       Fabric, scale-up-fabric}
 ~~~
 
-descriptor revision/fingerprint 是“本次编译使用哪个 catalog 版本”的证据，不进入 `DomainClassKey`，也不能把
-`domainClass` 裸字符串提升为全局 ID。
+Alpha catalog 中的 class 定义固定不变；它不属于 `DomainClassKey`，也不能把 `domainClass` 裸字符串提升为全局 ID。
 
 #### `applyTo` 的量词与作用单元
 
@@ -646,9 +645,8 @@ authoring source 的 authority 顺序是：
 ### 3.5 Policy 更新合同
 
 每份 canonical spec 计算 `PolicyFingerprint`。规范化必须包括 default 后的 `resourceName/mode/applyTo/scope/domainClass`、
-排序后的 policies 和 label selector，但不能包括对象 `resourceVersion`、descriptor revision 等存储或环境元数据。这样同一 workload
-intent 在 catalog 未变更语义时保持稳定。policy compile 另外记录 `CompiledDescriptorFingerprint`，plan/evidence 再 pin 实际引用的
-class descriptor 与 Domain membership fingerprint；两种 fingerprint 不能混为一个值。
+排序后的 policies 和 label selector，但不能包括对象 `resourceVersion` 或其他存储元数据。Alpha catalog 固定不变，policy compile
+直接使用这份固定 class 定义；plan/evidence 只需记录实际选择的 class、Domain/Fabric 和 membership。
 
 语义更新只在 Group 处于 quiescent 状态时允许：
 
@@ -660,7 +658,7 @@ AND 没有已经进入 bind handoff 的成员
 
 规则如下：
 
-1. quiescent 时允许更新；新 fingerprint 使旧 plan、fit cache 和 placement hint 全部失效；
+1. quiescent 时允许更新；新的 policy fingerprint 使旧 plan、fit cache 和 placement hint 全部失效；
 2. 活动状态出现后，只允许 canonical fingerprint 完全相同的 no-op 更新；
 3. 活动状态下修改 `mode/resource/scope/domainClass/applyTo/selector` 必须由 webhook 或 controller 拒绝；
 4. 删除 policy 也是语义更新，不能借删除绕过 drain；
@@ -773,7 +771,6 @@ type TopologyDevice struct {
 type DeviceDomain struct {
     Key                   LocalDomainKey
     Class                 DomainClassKey
-    DescriptorFingerprint string
     NodeName              string // diagnostic only
     MemberDeviceKeys      []DeviceKey
     MemberDomainKeys      []LocalDomainKey
@@ -792,7 +789,6 @@ type FabricMember struct {
 type FabricDomain struct {
     Key                   FabricKey
     Class                 DomainClassKey
-    DescriptorFingerprint string
     OwnerNodeUID          types.UID
     SourceGeneration      uint64
     Members               []FabricMember
@@ -841,27 +837,18 @@ stateDiagram-v2
 ### 5.1 ResourceTopologyDescriptor 与 DomainClass catalog
 
 `domainClass` 是管理员面向 workload 发布的稳定合同。workload author、Node annotation publisher 和 Adapter 都不能各自解释
-同一个裸字符串。**本文提议**先规范化为下列 scheduler-side descriptor；最终由 cluster-scoped API、受控配置还是其他载体承载，
-仍需 API review，但 webhook、controller、Provider normalizer 和 scheduler 必须消费同一版本的 catalog：
+同一个裸字符串。Alpha 直接固定一份 scheduler-side catalog；webhook、controller、Provider normalizer、scheduler 和 Adapter
+都读取这份相同的 class 定义。Alpha 不支持运行期间修改该定义，后续如需增加或改变 class，另开设计和兼容性评审：
 
 ~~~go
 type DomainClassDescriptor struct {
-    Key                   DomainClassKey
-    Description           string
-    DescriptorRevision    string
-    DescriptorFingerprint string
+    Key         DomainClassKey
+    Description string
 }
 
 type ResourceTopologyDescriptor struct {
     ResourceName corev1.ResourceName
-    Revision     string
     Classes      []DomainClassDescriptor
-    Fingerprint  string
-}
-
-type DomainClassVersionKey struct {
-    Class                 DomainClassKey
-    DescriptorFingerprint string
 }
 ~~~
 
@@ -869,7 +856,6 @@ type DomainClassVersionKey struct {
 
 ~~~yaml
 resourceName: nvidia.com/gpu
-revision: "2026-09-15-1"
 domainClasses:
   - scope: Node
     name: local-scale-up
@@ -885,25 +871,19 @@ domainClasses:
 合同如下：
 
 1. `(resourceName, scope, name)` 唯一标识一个 class；`name=local-scale-up` 可以在 NVIDIA 与 Ascend descriptor 中分别出现；
-2. `Revision/Fingerprint` 是 catalog 版本证据，不属于 `DomainClassKey`；内容不同不得复用相同 fingerprint。Alpha 使用
-   resource-catalog 粒度：每个 `DomainClassDescriptor` 复制所属 `ResourceTopologyDescriptor` 的同一 fingerprint，因而任一
-   class 合同变化会使该 resource 的全部 Provider/Adapter capability 和 candidate facts 重新验证；
-3. Provider 可以把 `NVLink island`、`HCCS domain` 等 source facts 规范化为管理员声明的 `local-scale-up`，但不能临时创造 catalog 外 class；
-4. Alpha descriptor 不含数字 rank。将来若管理员侧确有内部层级需求，只能另加不被 workload/compiler/filter/score/planner/anchor
-   消费的 descriptor metadata，并明确其 fingerprint 规则；它不能让 hard policy 从 `local-scale-up` 隐式扩大到 `pcie-root`；
-5. policy compiler 找不到 class 时返回 `XPUTopologyDomainClassUnknown`；class 已知但当前 Provider/Adapter capability 不能满足
+2. Provider 可以把 `NVLink island`、`HCCS domain` 等 source facts 规范化为管理员声明的 `local-scale-up`，但不能临时创造 catalog 外 class；
+3. Alpha descriptor 不含数字 rank；hard policy 只匹配 workload 明确指定的 class，不隐式扩大到其他 class；
+4. policy compiler 找不到 class 时返回 `XPUTopologyDomainClassUnknown`；class 已知但当前 Provider/Adapter capability 不能满足
    hard exact 执行时返回 `XPUTopologyDomainClassUnsupported` 或更具体的 `XPUAssignmentNotEnforceable`；
-6. descriptor 更新必须原子发布新 fingerprint，并使引用旧 descriptor 的 fit cache、未提交 plan 失效；活动 anchor/allocation
-   仍按原 fingerprint 恢复和 drain。旧 descriptor/evidence 以 `DomainClassVersionKey` 保留为 unavailable tombstone，直到其 owner、
-   anchor 和 reconciliation 全部结束；不能原地重解释同名 class；
-7. 将来若需要允许多个候选 class，应另行评审 `acceptableDomainClasses` 等显式 API；不能恢复数字阈值或静默 fallback。
+5. catalog 内容在 Alpha 生命周期内不可变；所有组件使用同一份固定定义。将来如需允许多个候选 class，应另行评审
+   `acceptableDomainClasses` 等显式 API，不能通过修改现有 class 含义或静默 fallback 实现。
 
 `Description` 是管理员与受信 Provider/Adapter 之间的语义合同，不是 scheduler 可从图中自行证明的带宽标准。Normalizer 能验证的是
 catalog 引用、resource/scope、显式 membership、closure 与 ID 一致性；`Adapter.ValidateTopology` 可验证厂商事实。管理员配置和受信
 publisher 是 class 语义的信任根，V4 不声称仅凭 `name=local-scale-up` 能推导或测量 NVLink/HCCS 性能。
 
 V4 不接受 V3 的 workload `tier/tierName`。迁移必须由用户/controller 显式把旧类别映射成 catalog 中的 `domainClass`，创建
-新的 canonical fingerprint。因为 structural schema 可能在 admission webhook 前 prune 未知字段，不能只从 Go type 删除旧字段：
+新的 canonical policy。因为 structural schema 可能在 admission webhook 前 prune 未知字段，不能只从 Go type 删除旧字段：
 任何承载该 policy 的 served schema（包括首个 V4 实现；若曾试发 V3，也包括其 served version）必须在对应
 PodGroup/VCJob 路径保留仅用于拒绝的 legacy tombstone 字段，并以 CEL
 `!has(self.tier) && !has(self.tierName)` 永久拒绝；Go Public type 和 canonical model 不暴露它们。不能依赖客户端
@@ -925,10 +905,9 @@ type ProviderNodeKey struct {
 }
 
 type TopologyProviderCapabilities struct {
-    Identity              ProviderIdentityRef
-    ResourceName          corev1.ResourceName
-    DescriptorFingerprint string
-    DomainClasses         []DomainClassKey
+    Identity     ProviderIdentityRef
+    ResourceName corev1.ResourceName
+    DomainClasses []DomainClassKey
 }
 
 type ProviderNodeUpdate struct {
@@ -939,8 +918,6 @@ type ProviderNodeUpdate struct {
     NodeUID             types.UID
     NodeResourceVersion string
     SourceGeneration    uint64
-    DescriptorRevision  string
-    DescriptorFingerprint string
     ObservedAt          time.Time
     FreshUntil          time.Time
     Operation           ProviderUpdateOperation // ReplaceFacts | ClearFacts
@@ -983,8 +960,8 @@ Provider payload 中的 class 名是对管理员 catalog 的引用。以 Ascend 
 ~~~
 
 Normalizer 必须把 payload 的 `resourceName + Node scope + domainClass` 解析为 `DomainClassKey`，再生成
-`DeviceDomain{Key, Class, ...}`。未知 class、scope 不匹配、descriptor fingerprint 不匹配或 class membership 非法的 payload
-不能完成初次同步，也不能覆盖最后一次有效事实。V4 不允许 Provider 用“第 0 层”等本地序号代替 class。
+`DeviceDomain{Key, Class, ...}`。未知 class、scope 不匹配或 class membership 非法的 payload 不能完成初次同步，也不能覆盖最后一次
+有效事实。V4 不允许 Provider 用“第 0 层”等本地序号代替 class。
 
 Annotation payload 由受信 publisher 写入 Node；workload ServiceAccount 和 scheduler ServiceAccount 不得有该 key 的写权限。
 由于 Node patch RBAC 不能限制单个 annotation key，部署必须使用 ValidatingAdmissionPolicy 或 webhook 对 publisher identity
@@ -1096,7 +1073,7 @@ Node informer event
   -> under SchedulerCache.Mutex record current NodeName/UID/resourceVersion
      and mark a replacement UID as Pending while invalidating old candidate facts
   -> release all locks
-  -> parse, normalize, build graph closure and canonical fingerprint validation
+  -> parse, normalize and build graph closure
   -> when an identity-compatible Adapter exists, run Adapter ValidateTopology outside locks
   -> acquire SchedulerCache.Mutex
   -> verify NodeName still resolves to the same UID/resourceVersion
@@ -1148,7 +1125,6 @@ type DeviceTopologySnapshot struct {
     LocalDomains         map[LocalDomainKey]DeviceDomain
     Fabrics              map[FabricKey]FabricDomain
     DomainClasses        map[DomainClassKey]DomainClassDescriptor
-    RetiredDomainClasses map[DomainClassVersionKey]DomainClassDescriptor
     DomainsByClass       map[DomainClassKey][]DomainRef
     ProvidersByClass     map[DomainClassKey][]ProviderIdentityRef
     DeviceToDomains      map[DeviceKey][]LocalDomainKey
@@ -1161,13 +1137,10 @@ type DeviceTopologySnapshot struct {
 `FabricKey`。也可以在实现中拆成 `LocalDomainsByClass` 与 `FabricsByClass` 两个强类型索引，但不能每次规划再扫描并猜测类别。
 所有 index 必须只包含 class、resource 和 scope 一致且已通过 descriptor 校验的对象，并按 canonical key 稳定排序。
 `ProvidersByClass` 来自已启用 Provider 的受控 capability 注册，不从当前是否恰好有一个 Domain 对象反向猜测支持能力。
-`RetiredDomainClasses` 只用于活动 owner/anchor 的恢复、drain 和审计，绝不进入 `DomainsByClass` 或新的 hard/soft 候选。
-descriptor 切换时，cache 必须原子移除 fingerprint 不匹配的 Domain 与 Provider capability，并将相关 ProviderNodeKey 置为
-Pending；只有 Provider/Adapter 对新 fingerprint 重新验证后才能重建 candidate index。
+固定 catalog 不在运行期间切换；catalog 缺失或非法时 topology manager 不 Ready，不能用另一份 class 定义继续规划。
 
-Plan 记录全局 `Revision` 用于诊断，并 pin 实际引用对象的 `MembershipFingerprint`、source generation 和 NodeUID。
-它还 pin 编译时使用的 descriptor fingerprint。提交时不要求整个 Revision 完全相等；final reserve 只重新验证 plan 引用对象及
-class descriptor，避免无关 Node heartbeat 使所有计划失效。若同名 class 的 descriptor fingerprint 已改变，必须完整 recompile/replan。
+Plan 记录全局 `Revision` 用于诊断，并校验实际引用对象的 membership、source generation 和 NodeUID。提交时不要求整个 `Revision`
+完全相等；final reserve 只重新验证 plan 引用对象，避免无关 Node heartbeat 使所有计划失效。
 
 ## 6. Group、AdmissionSet 与调度算法
 
@@ -1209,7 +1182,6 @@ AdmissionSet(statement, group)
 ~~~go
 type AnchoredDomainSelection struct {
     Class                  DomainClassKey
-    DescriptorFingerprint string
     LocalDomainKey        *LocalDomainKey // exactly one of LocalDomainKey/FabricKey
     FabricKey             *FabricKey
     MembershipFingerprint string
@@ -1236,7 +1208,7 @@ type GroupPlacementAnchor struct {
 - 后续 AdmissionSet 必须先恢复并满足同一 anchor；
 - hard policy 的 anchor 无法无歧义恢复时 fail closed，不能静默选择第二个 Fabric；
 - policy fingerprint 不同的 plan 不能复用旧 anchor；
-- 任一 selection 的 class key 或 descriptor fingerprint 不同，plan 都不能复用旧 anchor，也不能把同名 class 重新解释成另一种 membership；
+- 任一 selection 的 class key 或 membership 不同，plan 都不能复用旧 anchor，也不能把同名 class 重新解释成另一种 membership；
 - 只有 Group 终止，且不存在 active allocation、reservation、reconciliation 后才能清理；
 - anchor 写结果不明确时进入 reconciliation，不能把“写入超时”当作“没有 anchor”。
 
@@ -1268,7 +1240,7 @@ DomainClassKey{
 }
 ~~~
 
-然后从 snapshot 的 `DomainClasses` 取得 descriptor、校验 Provider/Adapter capability，并保存 descriptor fingerprint。缺 catalog
+然后从 snapshot 的 `DomainClasses` 取得固定 class 定义、校验 Provider/Adapter capability。缺 catalog
 entry 返回 `XPUTopologyDomainClassUnknown`；没有 Provider capability 返回 `XPUTopologyDomainClassUnsupported`；Provider 已声明但
 数据 Pending/stale 使用对应 data reason；hard exact Adapter 不支持该 class 返回 `XPUAssignmentNotEnforceable`。compiler 不能把
 unknown class 改成“任意 Domain”，也不能根据任何内部数字 rank 选择更宽 class。
@@ -1463,7 +1435,6 @@ selections:
       resourceName: nvidia.com/gpu
       scope: Fabric
       name: scale-up-fabric
-    descriptorFingerprint: <compiled-catalog-fingerprint>
     fabricKey: F1
 phase: Active
 ~~~
@@ -1530,7 +1501,6 @@ type TopologyPlacementPlan struct {
     PlanID                   string
     GroupRef                 TopologyGroupRef
     PolicyFingerprint        string
-    DescriptorFingerprints  map[DomainClassKey]string
     SnapshotRevision         uint64
     ReferencedFingerprints   map[ObjectKey]string
     Placements               []TopologyTaskPlacement
@@ -1547,8 +1517,7 @@ Filter/Score/Allocate 阶段不得
 
 ~~~go
 type DomainClassCapability struct {
-    Class                 DomainClassKey
-    DescriptorFingerprint string
+    Class DomainClassKey
 }
 
 type AllocationAdapter interface {
@@ -1576,8 +1545,7 @@ type DeviceIdentityContract struct {
 一个 resource 在一次调度生命周期只有一个 exact-allocation owner。xPU Adapter 与现有 deviceshare/DRA/backend 不得分别
 reserve 或扣减同一批 Device ID。Adapter identity contract 必须与
 `DeviceIdentityContract{ProviderID, Namespace, ResourceName}`
-完全匹配，并证明 backend 接受这些 ID。`DomainClassCapabilities()` 只声明该 Adapter 已针对哪个 descriptor fingerprint 验证能执行
-哪些 catalog class；它不创建
+完全匹配，并证明 backend 接受这些 ID。`DomainClassCapabilities()` 只声明该 Adapter 能执行哪些固定 catalog class；它不创建
 class、不改变 `DomainClassKey` identity，也不能用通配符绕过 hard policy。Provider 能发现某 class 但 Adapter 未声明 exact
 capability 时，`soft` 仍可使用有证据的 preference，`hard` 返回 `XPUAssignmentNotEnforceable`。
 
@@ -1659,7 +1627,7 @@ sequenceDiagram
 final reserve 必须：
 
 1. 覆盖 AdmissionSet 中全部新 Allocate operations；
-2. 重新校验 PodUID、NodeUID、policy/anchor、请求数量和引用 fingerprint；
+2. 重新校验 PodUID、NodeUID、policy/anchor、请求数量和引用的 Domain/Fabric membership；
 3. 对全部 DeviceKeys 做 all-or-nothing `Free -> Held`；任一冲突则零修改；
 4. 使用 canonical Fabric/Domain/Device lock order；
 5. reserve 成功后把唯一 owner token 与同一个 Statement/group context 绑定；
@@ -1895,7 +1863,6 @@ XPUReconcilePending
 | `(resourceName, scope, domainClass)` 不在 catalog | policy fail closed | 不产生 plan/reservation | `XPUTopologyDomainClassUnknown` |
 | class 已知但 Provider/Adapter capability 不支持 hard | Group Pending | 不产生 exact owner | `XPUTopologyDomainClassUnsupported` / `XPUAssignmentNotEnforceable` |
 | 活动期修改 policy | 拒绝更新；旧 fingerprint 继续有效 | 不迁移 owner | `XPUTopologyPolicyMutationForbidden` |
-| 规划期间 descriptor fingerprint 改变 | 丢弃并完整 recompile/replan | CAS 零修改；活动 anchor 不重解释 | `XPUReservationConflict` |
 | Provider stale/invalid | 不使用新 hard plan | 保留已有 owner；需要时 reconcile | `XPUTopologyStale` |
 | Node 同名重建 | 新 UID Pending；旧 key 不候选 | 旧 active key tombstone | `XPUTopologyDataNotReady` |
 | Fabric owner/member UID 变化 | Fabric 不可用，等待 owner 重发完整集合 | active key 保留 | `XPUFabricDomainUnavailable` |
@@ -1944,7 +1911,7 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 - 同名 class 在不同 resource/scope 下编译成不同 `DomainClassKey`；workload 不能用具体 Domain ID 充当 class；
 - catalog 未声明的 class 对 hard/soft 都按 authoring error 拒绝；已知但不可 exact 执行的 hard class fail closed；
 - Public schema、Pod annotation 和 VCJob field 规范化后 fingerprint 一致；
-- `PolicyFingerprint` 包含规范化后的 `domainClass`，但不包含 descriptor revision；compiled plan 单独 pin descriptor fingerprint；
+- `PolicyFingerprint` 包含规范化后的 `domainClass`；固定 catalog 只提供 class 定义，不参与 workload 版本判断；
 - reordered/exact-duplicate policies 得到同一 fingerprint，duplicate Group policy 只生成一个 anchor selection；重叠 selector 的
   不同 class fail closed；
 - annotation 无 `allocationStrategy`，Public schema 也拒绝该字段；
@@ -1962,8 +1929,7 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 - `DeviceDomain.Class.Scope=Node`、`FabricDomain.Class.Scope=Fabric`，resource/class 不一致的 Provider payload 被拒绝；
 - Provider 只能引用 descriptor catalog：HCCS/NVLink source facts 可映射到 `local-scale-up`，未知 class 不能完成同步；
 - `DomainsByClass` 只包含通过 descriptor 校验的对象，且 local/fabric 引用判别正确、稳定排序；
-- descriptor 内容变化原子生成新 fingerprint；旧 Session/未提交 plan 不被原地修改；
-- 同一个 DomainClassKey 切换 descriptor fingerprint 时，旧 Domain/Provider/Adapter capability 退出 candidate，重新验证前保持 Pending；
+- Alpha catalog 内容固定；catalog 缺失或非法时相关能力保持 Pending/fail closed；
 - 同名 Node 换 UID 后旧 facts 退出 candidate index，新 UID 为 Pending；
 - 迟到的旧 UID update/clear 不影响新 UID；
 - old UID active allocation 保留 tombstone，直至显式 Released；
@@ -2032,7 +1998,7 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 - 冻结 `XPUTopologyAwareScheduling` gate、`xpu-topology-aware` plugin 名、双重启用/禁用和 safe-drain 合同；
 - 冻结 plugin arguments、严格 validator、process manager 与 per-Session plugin 的生命周期边界；
 - 冻结 `DeviceTopologySpec` 的 hard/soft、applyTo、scope/domainClass，并明确拒绝 `tier/tierName`；
-- 选择 `ResourceTopologyDescriptor` 的 authoritative 载体、更新/CAS 和 webhook 分发路径；
+- 确定 `ResourceTopologyDescriptor` 的固定 authoritative 载体和 webhook/controller/Provider/scheduler 的统一读取路径；
 - 明确 Public API 无 allocationStrategy；
 - 评审 Pod annotation key、canonicalization 和 mutation webhook；
 - 在 `BeforeStatementCommit` 与 participant、`AddBindGroup` 与 batch 接口之间选择最终名称；
@@ -2044,7 +2010,7 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 - 实现 gate/plugin 组合校验、存量 typed-policy guard、热更新拒绝与 activation digest/readiness；
 - 建立 process-scoped topology manager；plugin `New/OnSessionOpen/OnSessionClose` 不拥有 Provider 生命周期；
 - 实现 `DomainClassKey`、descriptor catalog、Device/LocalDomain/Fabric IDs 和 keys；
-- `DeviceDomain/FabricDomain.Class`、`DomainsByClass` 与 descriptor fingerprint publish；
+- `DeviceDomain/FabricDomain.Class`、`DomainsByClass` 与固定 catalog 校验后的 topology publish；
 - Node UID/RV ordering、Pending/Synced、old UID tombstone；
 - Annotation/Mock Provider、schema/security 和 freshness；
 - single-owner complete Fabric declaration；
@@ -2114,7 +2080,9 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 - topology-aware victim choice 可延期，但 release ledger correctness 不可延期；
 - exact transaction 必须有 checkpoint、全组 PreBind、零提前 Bind、幂等 compensation 和显式三态 reconciliation；
 - feature gate 名为 `XPUTopologyAwareScheduling`、Alpha 默认关闭；scheduler plugin 名为 `xpu-topology-aware`，必须双重显式启用；
-- process-scoped topology manager 与 per-Session plugin 生命周期分离；`OnSessionClose` 不释放全局 owner。
+- process-scoped topology manager 与 per-Session plugin 生命周期分离；`OnSessionClose` 不释放全局 owner；
+- 首个 Exact Adapter 的设备厂商目标为 NVIDIA，resource 为 `nvidia.com/gpu`；XPU-01 使用 nvml-mock 做协议/故障模拟，
+  M4 前仍需真实 NVIDIA 节点核验容器可见 UUID、恢复与释放。
 
 ### 13.3 仍需社区评审的 P0/P1 问题
 
@@ -2122,8 +2090,8 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 | --- | --- | --- | --- |
 | P0 | transaction framework 采用最小 hook 还是 generic participant | Go API 名称、注册和兼容形状 | 第 8 章语义与测试不可缩减 |
 | P0 | GroupPlacementAnchor/evidence 的持久载体 | PodGroup status、受控 annotation、Claim 或 Adapter record | 必须 durable、CAS、可恢复、可 reconcile |
-| P0 | 第一个真实 Exact Adapter | HAMi/vGPU companion、厂商 API 或其他实现 | 必须接受 scheduler-selected IDs 并实现 Recover/Released evidence |
-| P0 | `ResourceTopologyDescriptor` 的 authoritative 载体与一致分发 | cluster-scoped API、受控配置或其他 API 形状 | webhook/controller/Provider/scheduler 必须消费同一 fingerprint；活动 class 不原地重解释 |
+| P0 | NVIDIA Exact Adapter 的具体执行形状 | NVIDIA Device Plugin 扩展、NVIDIA-specific companion 或其他 NVIDIA runtime integration | 必须接受 scheduler-selected GPU UUID 并实现 Recover/Released evidence；nvml-mock 通过不替代真实硬件 runtime 验收 |
+| P0 | `ResourceTopologyDescriptor` 的 authoritative 载体与一致分发 | Alpha 固定 catalog 的具体交付文件/ConfigMap 形状 | webhook/controller/Provider/scheduler 必须消费同一份固定 class 定义；运行期间不可修改 |
 | P1 | plugin config validator 的 framework 形状 | generic validator registry、让 builder 返回 error 或 scheduler 专用校验 | 必须在首个 Session 前严格失败；热更新失败保留上一配置，不能只在 `OnSessionOpen` warning |
 | P1 | early domain feasibility 如何与 HyperNode candidate path 组合 | 新 hook 的位置和数据结构 | 不注册第二个 first-plugin-wins gradient |
 | P1 | `domainClass` 名称语法与 catalog 演进规则 | DNS label 的精确限制、废弃窗口和版本策略 | key 至少包含 resource+scope+name；V4 拒绝旧字段和隐式 fallback |
@@ -2155,7 +2123,7 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 | Session 初始化 | `pkg/scheduler/framework/session.go:openSession` | 从 ClusterInfo 取得同一 topology view |
 | Topology manager | `pkg/scheduler/topology/manager/`（建议） | process-scoped Provider/cache/ledger/Adapter registry/recovery 生命周期与 activation digest |
 | Provider/normalizer | `pkg/scheduler/topology/provider/`（建议） | Annotation/Mock parse、validate、NodeUID/RV/generation |
-| Descriptor catalog | API/受控配置载体待评审；scheduler canonical type（建议） | 管理员 class 合同、revision/fingerprint 和一致分发 |
+| Descriptor catalog | Alpha 固定 ConfigMap/静态配置；scheduler canonical type（建议） | 管理员 class 合同、只读加载和一致分发 |
 | live topology | `pkg/scheduler/cache/topology_cache.go`（建议） | facts、descriptor view、readiness、class indexes、ledger、immutable publish |
 | Pod canonicalization | `pkg/controllers/podgroup/pg_controller_handler.go`、Job controller、webhook | authoring source 转换、冲突和 mutation validation |
 | Public types | `staging/src/volcano.sh/apis/pkg/apis/scheduling/`、batch API | `DeviceTopologySpec` typed schema 与生成代码 |
@@ -2176,8 +2144,8 @@ soft policy 的 topology data/adapter 不可用时只失去相应 preference，�
 7. Public selector 是 `scope + domainClass`；V4 schema 拒绝 `tier/tierName`。
 8. `scope` 只定义 identity/ownership/membership 边界；`DomainClassKey` 是非唯一类别，不是 Domain ID。
 9. DeviceDomain 与 FabricDomain 都携带已由 descriptor 校验的 Class，并进入稳定 class index。
-10. policy fingerprint 与 descriptor fingerprint 分离；活动 class 不按新 catalog 原地重解释。
-11. 活动 policy 不原地切换 fingerprint。
+10. Alpha catalog 的 class 定义固定不变；运行期间不更新或重解释活动 class。
+11. 活动 policy 不原地切换；语义更新必须遵守 quiescent 规则。
 12. Annotation Fabric 只有一个 owner，且 owner 发布完整成员集合。
 13. AdmissionSet 覆盖 winning Statement 中该 Group 的全部新 Allocate operations。
 14. Exact assignment 总是绑定 PodUID、ContainerName、ResourceName 和具体 DeviceKeys。

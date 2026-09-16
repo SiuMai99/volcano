@@ -4,6 +4,9 @@
 >
 > 状态：待实施计划；任务均未因本文创建而完成。源码核对日期：2026-09-16；本地 HEAD：`7604cc7d3`。
 > 下文“现有”指本地 checkout，“新增/建议”指拟开发内容，不代表上游已经接受。
+>
+> XPU-00 已启动；合同冻结草案与 fixture 规范见
+> [101-generic-xpu-topology-aware-contract-review-zh-v4.md](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
 
 ## 1. 交付目标与拆分原则
 
@@ -39,7 +42,8 @@ V4 中的“PR 1”和“PR 3”各自包含多个跨组件改动，本计划将
 
 延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何、多 Container/init 生命周期、topology-aware victim selection、
 自动推导 Fabric、通信 ring 优化、active-active reservation、workload 同时启动屏障。
-选择 HAMi companion 作为 backend 候选也不意味着首期支持 vGPU 请求形状。
+首个 Adapter 的厂商目标固定为 NVIDIA；XPU-01 可用 `nvml-mock` 模拟 NVIDIA inventory/topology/health，并用真实 NVIDIA Device Plugin
+接入 `nvidia.com/gpu`。HAMi 不是底层设备厂商；即使参考其分配/注入实现，也不意味着首期支持 vGPU 请求形状。
 
 ## 2. 源码基线与实际改动面
 
@@ -49,7 +53,7 @@ V4 中的“PR 1”和“PR 3”各自包含多个跨组件改动，本计划将
 | [Helm values](../../../installer/helm/chart/volcano/values.yaml) | 已有 `scheduler_feature_gates`、`admission_feature_gates`、`scheduler_config_override` | 复用现有参数，增加 xPU 示例和渲染测试，无需重复造开关 |
 | [自动 PodGroup](../../../pkg/controllers/podgroup/pg_controller_handler.go) | 有 `buildPodGroupFromPod`、`parseNetworkTopologyFromPod`、`shouldUpdateExistingPodGroup` | 新增 strict xPU canonicalization，不照搬无效 network mode 的默认回退 |
 | [VCJob controller](../../../pkg/controllers/job/job_controller_actions.go)、[更新校验](../../../pkg/webhooks/admission/jobs/validate/admit_job.go) | 已有 Job/partition 到 PodGroup/SubGroup 的 NetworkTopology 转换；`validateJobUpdate` 对其他 spec 变化严格限制 | 新字段要覆盖两级转换，并专门实现 V4 quiescent 更新规则，不能只补 struct |
-| [JobInfo.SetPodGroup](../../../pkg/scheduler/api/job_info.go) | SubJobs 仅在初次设置或 SubGroupPolicy 变化时重建 | 新 policy/fingerprint 的缓存失效需要覆盖顶层 policy 变化，避免保留旧 SubJob 视图 |
+| [JobInfo.SetPodGroup](../../../pkg/scheduler/api/job_info.go) | SubJobs 仅在初次设置或 SubGroupPolicy 变化时重建 | 新 policy 的缓存失效需要覆盖顶层 policy 变化，避免保留旧 SubJob 视图 |
 | [ClusterInfo](../../../pkg/scheduler/api/cluster_info.go)、[Snapshot](../../../pkg/scheduler/cache/cache.go)、[openSession](../../../pkg/scheduler/framework/session.go) | 尚无 DeviceTopology；Snapshot 在主锁下取得集群视图 | XPU-06 增加同次捕获，且 Node replacement 与 topology publish 协调 |
 | [allocate](../../../pkg/scheduler/actions/allocate/allocate.go)、[recorder](../../../pkg/scheduler/actions/allocate/recorder.go) | 有 worksheet、HyperNode trial、nomination、Save/RecoverOperations 和多处分支提交 | XPU-09 需对所有提交分支做 checkpoint/AdmissionSet 审计，不只改主循环 |
 | [Statement](../../../pkg/scheduler/framework/statement.go) | `Commit()` 无 error；Merge 转移 operations；SaveOperations 克隆 Task operations | 新增 error-returning exact 路径；可复制试算数据，但不得复制可提交 participant/token |
@@ -66,12 +70,12 @@ M0 不是重写设计。输出短决策记录、接口草案与反例用例，�
 
 | 决策 | 建议起点与必须产出的结论 | 阻塞的工作 |
 | --- | --- | --- |
-| D1：catalog 权威载体 | 比较受控版本化 ConfigMap 与 cluster-scoped API；优先验证能否复用受控配置。冻结发布者、RBAC、原子 fingerprint、历史版本保留、scheduler/webhook/controller 分发和不可读行为 | XPU-03 的存储实现、04、05 |
+| D1：catalog 权威载体 | 固定 Alpha class 定义，使用一份只读 catalog ConfigMap/静态配置；冻结安装方式、RBAC、scheduler/webhook/controller/Provider 的统一读取和不可读行为。不实现运行期间更新 | XPU-03 的存储实现、04、05 |
 | D2：anchor/evidence 持久载体 | 优先评估复用真实 Adapter durable record，PodGroup 仅保存引用；若无法 CAS/枚举恢复则选独立受控载体。明确 owner、RecordRevision、epoch、结果未知处理和 GC | XPU-11、14、15 |
 | D3：framework 扩展形状 | 在最小 hook 与 participant 中选一种；兼容普通 Commit，冻结 exact 错误返回、唯一 owner、batch preparation/acceptance 和异步 handoff 生命周期 | XPU-09、12、13 |
 | D4：首个真实 Adapter | 用 XPU-01 的小实验验证：选中 ID 可执行、reservation 可恢复、显式 Released、旧 epoch 可拒绝。未证明前不承诺 Exact Alpha 日期 | XPU-15、真实硬件环境 |
 | D5：API 与 schema | 冻结 class 名语法、默认值、selector 冲突判定、strict JSON、大小上限、legacy tombstone/CEL 的生成方式；确认 API server 支持的 schema 校验环境 | XPU-03、04 |
-| D6：authoring 与活动状态 | 明确哪个持久视图证明 quiescent；最终 reserve 与 policy mutation 如何借助 CAS/fingerprint/fencing 排除竞态；不能只查 webhook 的一次内存快照 | XPU-04、11、13 |
+| D6：authoring 与活动状态 | 明确哪个持久视图证明 quiescent；最终 reserve 与 policy mutation 如何借助 CAS/fencing 排除竞态；不能只查 webhook 的一次内存快照 | XPU-04、11、13 |
 | D7：激活与 action 兼容 | 冻结 `schedulerName → accepted activation config` 映射、digest、reload/drain、recovery readiness；列出 backfill/抢占等是否接入 exact 或对相应任务明确阻塞 | XPU-02、13、14 |
 | D8：组合与状态归属 | 明确一个 Statement 涉及多个 SubGroup、多条 resource policy 时的 group context、共同 reservation、失败补偿和 anchor CAS；Job 级与 SubGroup 级约束必须同时满足 | XPU-08～14 |
 
@@ -80,17 +84,20 @@ M0 不是重写设计。输出短决策记录、接口草案与反例用例，�
 1. **gate 关闭时允许删除 policy** 仍受 V4 §3.5 的 quiescent 限制；活动 allocation/anchor 未 drain 时不能借删除绕过保护。
 2. `soft` 只做 preference，不建立 hard anchor。MVP 如何体现 Group soft preference 要给出可复现评分例子；不能让软约束排除普通可行 Node。
 
-### XPU-01：真实 Adapter 探针
+### XPU-01：NVIDIA Adapter 探针
 
-在大规模修改 Statement 前，针对一个候选 backend 完成小实验：
+在大规模修改 Statement 前，针对 NVIDIA Adapter 完成分层小实验。第一层使用 `nvml-mock + NVIDIA Device Plugin` 做可重复的协议、
+topology 和故障模拟；第二层在 M4 前用真实 NVIDIA 节点补 runtime identity 验收：
 
-1. 选定非默认设备 ID，提交两次相同 token 的 reservation/prepare，核对 backend 是否保持同一 assignment。
-2. 从实际容器/设备运行时读出设备身份，与 plan 的 PodUID、ContainerName、ResourceName、NodeUID 和 DeviceIDs 对照。
+1. 从 nvml-mock 枚举稳定 NVIDIA GPU UUID，选定非默认 UUID，提交两次相同 token 的 reservation/prepare，核对 Adapter 是否保持同一 assignment。
+2. mock 层核对 NVML/Device Plugin inventory、plan 与 handoff；真实硬件层再从实际容器/NVIDIA runtime 读出设备身份，与 plan 的
+   PodUID、ContainerName、ResourceName、NodeUID 和 DeviceIDs 对照。
 3. 重启 Adapter 客户端或 owner 进程后枚举未决 reservation；缺项必须能区分 Released 与 Unknown。
 4. 请求释放并取得明确 Released 证据；验证旧 epoch 或过期 token 不能覆盖新 owner。
-5. 明确 Fabric 测试是否有真实互联硬件、可信 facts publisher 和可重复的失败注入手段。
+5. 明确 nvml-mock 能覆盖的 Fabric/topology/health 故障与真实 NVIDIA Fabric 验收边界；列出可信 facts publisher 和可重复失败注入手段。
 
-产物是 backend 能力表、运行日志/断言、尚缺的协议和硬件清单。已有 backend 没有 exact-ID 或 durable/release 语义时，
+产物是 NVIDIA Adapter 能力表、mock/真实分层日志与断言、尚缺的协议和硬件清单。nvml-mock 能证明协议行为，不能替代真实容器
+UUID 和真实硬件释放验收。Adapter 没有 exact-ID 或 durable/release 语义时，
 把结果作为 D4 决策输入；先完成 Advisory 和 Mock 协议工作，真实 Exact 排期按新增 backend 工程重估。
 
 ## 4. 依赖、工作包和估算
@@ -149,7 +156,7 @@ flowchart TB
 
 | ID | 工作包 / 建议 PR 主题 | 依赖 | 主责 | 人日 |
 | --- | --- | --- | --- | --- |
-| XPU-00 | 冻结 API、framework、持久化、活动状态与验收合同 | 无 | A/S/R | 5～8 |
+| XPU-00 | [冻结 API、framework、持久化、活动状态与验收合同](./101-generic-xpu-topology-aware-contract-review-zh-v4.md) | 无 | A/S/R | 5～8 |
 | XPU-01 | 真实 Adapter 可执行性探针与硬件验收方案 | 00 的初版合同；结果反哺 D4 | R | 4～6 |
 | XPU-02 | Feature/plugin activation、validator、process manager 骨架 | 00/D7 | S | 4～6 |
 | XPU-03 | Public API、catalog、canonical types 与生成链 | 00/D1/D5 | A/S | 6～9 |
@@ -192,7 +199,7 @@ flowchart TB
 - 注册默认关闭的 `XPUTopologyAwareScheduling` 和 `xpu-topology-aware` builder；复用两个进程的 feature-gate 参数。
 - 严格校验 plugin arguments：unknown key/value、重复 resource owner、identity/capability 不匹配、禁用必要 callback 均失败。
 - 首次配置无效不进入调度 Ready；热更新完整验证后原子接受，失败保留旧配置及其 manager，不提前停止旧 owner。
-- activation digest 覆盖 gate、plugin 参数、Provider identity、descriptor source 与 resource owner，贯通 immutable view、Plan、Reservation、SchedulerEpoch。
+- activation 校验覆盖 gate、plugin 参数、Provider identity、固定 catalog 是否可读与 resource owner，贯通 immutable view、Plan、Reservation、SchedulerEpoch。
 - feature gate 是进程启动参数；只对 scheduler 配置做热更新。关闭 gate 必须先用旧配置 drain，再统一重启 scheduler/admission。
 - 将 catalog/config readiness、resource recovery readiness、单 Node freshness 区分；单 Node 未同步只影响相应候选。
 - process manager 持有 Provider/cache/ledger/Adapter/recovery；per-Session plugin 仅持只读 view 和 overlay。
@@ -208,14 +215,13 @@ flowchart TB
 新增共享 canonicalization/catalog/model 包。共享逻辑不得依赖 scheduler 实例或 live ledger。
 
 - 增加 PodGroup/SubGroup policy 与 VCJob/partition ergonomic 字段；补 internal/versioned types、deepcopy、conversion 和 client 生成。
-- 实现 default/validate/stable sort/dedup/fingerprint；canonical selector 排序、重叠 selector 检测、多 policy 冲突使用同一实现。
+- 实现 default/validate/stable sort/dedup/canonical equality；canonical selector 排序、重叠 selector 检测、多 policy 冲突使用同一实现。
 - 定义 NodeUID-safe DeviceKey、LocalDomainKey、FabricKey、DomainClassKey、Node/Fabric class-bearing model。
-- 实现 catalog 权威读取、resource 粒度 fingerprint、历史 descriptor retention 和 reader 同步状态。
-- policy fingerprint 与 descriptor fingerprint 分离；新 descriptor 使未提交编译/计划失效，旧版本仅供活动记录恢复/drain。
+- 实现固定 catalog 读取和 reader readiness；不实现历史 catalog 或运行期间切换。
 - Go/canonical model 不包含 `tier/tierName`；served schema 用 reject-only tombstone + CEL 拒绝，生成后不能丢失该规则。
 - 明确 `allocationStrategy` 等禁用字段在 typed schema 与 annotation 的拒绝路径，不能只依赖客户端 Strict。
 
-**完成条件**：三种 authoring 输入的同义 intent 得到同一 fingerprint；不同 resource/scope 的同名 class 不冲突；
+**完成条件**：三种 authoring 输入的同义 intent 得到同一 canonical spec；不同 resource/scope 的同名 class 不冲突；
 通过真实 API server schema 测试证明旧字段被拒绝，而非先 prune 后接受；生成链重复运行无差异。
 
 ### XPU-04：controller/webhook 与可解释状态
@@ -224,7 +230,7 @@ flowchart TB
 `pkg/webhooks/admission/{jobs,podgroups,pods}/`、`JobInfo.SetPodGroup`、Session/JobUpdater/status update 路径。
 
 - 支持 direct PodGroup、VCJob、Deployment/ReplicaSet、StatefulSet、bare Pod；所有入口最终物化 `PodGroup.spec.deviceTopology`。
-- strict annotation parser 拒绝重复 JSON key、未知版本/字段、超限及无效类型；typed/owner/annotation 多源比较 canonical fingerprint。
+- strict annotation parser 拒绝重复 JSON key、未知版本/字段、超限及无效类型；typed/owner/annotation 多源比较 canonical spec。
 - 解析失败或成员冲突时整组 Pending，即使 canonical spec 为空也保留 blocker；scheduler 不直接读 workload annotation。
 - 实现 quiescent/no-op/活动 mutation 规则，包含删除 policy、Pod template rollout、VCJob 与生成 PodGroup 的 UID/RV CAS。
 - 为 VCJob 现有更新校验加入精确的 xPU 规则，不放开其他 spec；同步更新 Job/SubJob 的 policy 与 compiled-cache 失效。
@@ -242,7 +248,7 @@ admission 读取失效 catalog/activation 时 fail closed。D6 的真实活动�
 - Node RV 只做相等验证；同 generation 仅接受内容一致 heartbeat；invalid payload 保留最后有效事实但不刷新有效期。
 - 规范化 catalog class、membership closure、去重、无环、resource/scope；禁止从 Link、Node 或 HyperNode 猜 hard Domain。
 - Node-local facts 与 single-owner complete Fabric 分开验证；Fabric member 必须解析到当前 UID/generation/local Domain。
-- Provider/Adapter capability 引用同一 descriptor fingerprint；缺 Adapter 不阻断有效 soft facts 发布。
+- Provider/Adapter capability 只能引用固定 catalog 中已定义的 class；缺 Adapter 不阻断有效 soft facts 发布。
 - 提供可信 publisher 的最小输入规范、RBAC 与 admission 保护；拒绝 workload/scheduler 身份篡改 topology annotation。
 
 **完成条件**：重复 ID 跨 Node 合法、同 Node 冲突非法；错误 class、循环成员、乱序更新、owner/member 变化与伪造发布全部有测试。
@@ -257,10 +263,10 @@ admission 读取失效 catalog/activation 时 fail closed。D6 的真实活动�
 - 固定锁序 `SchedulerCache.Mutex → topologyCache.mu`；parse、closure、Adapter RPC、持久 I/O 在锁外。
 - Snapshot 在同一临界区获取 Node/Job/Queue 与 immutable topology pointer；plugin 不再次 snapshot。
 - 建立 DomainsByClass、ProvidersByClass、NodeToDomains、SchedulableByDomain 等稳定索引，发布后 map/slice 不可变。
-- Node/Fabric/descriptor replacement 使旧候选失效；有 owner 的旧 key 留 tombstone，清理通过后续 ledger/reconcile 接口决定。
+- Node/Fabric replacement 使旧候选失效；有 owner 的旧 key 留 tombstone，清理通过后续 ledger/reconcile 接口决定。
 - 区分 facts、health、allocation overlay；不把 Node aggregate 数量当单个 Domain 的可用数量。
 
-**完成条件**：并发 Node replacement、旧 UID ClearFacts、descriptor 切换、source 删除、旧 Session 不变、锁序/race 测试通过。
+**完成条件**：并发 Node replacement、旧 UID ClearFacts、catalog 缺失/非法、source 删除、旧 Session 不变、锁序/race 测试通过。
 有 owner tombstone 的全生命周期在 XPU-10/14 联测。
 
 ### XPU-07：Advisory MVP
@@ -274,13 +280,13 @@ admission 读取失效 catalog/activation 时 fail closed。D6 的真实活动�
 - 配置相同、workload 无 policy 时，不改变其他 plugin 的候选与评分；不注册第二个 HyperNode gradient 或 JobReadyFn。
 - Exact transaction readiness 尚未成立时，所有 hard policy 明确失败，不因 Fake/registry 中出现 Adapter 而提前放行。
 
-**M2 验收演示**：安装 gate/plugin → 提交 catalog/facts → 用 direct PodGroup 和 Deployment annotation 分别调度 soft workload →
+**M2 验收演示**：安装 gate/plugin → 部署固定 catalog 并提交 facts → 用 direct PodGroup 和 Deployment annotation 分别调度 soft workload →
 观察确定性 preference → 删除/过期 facts 后普通候选仍可调度 → 同一请求改 hard 后获得明确不可执行原因且无 Bind。
 
 ## 6. M3：完整的 Mock Exact 闭环
 
 这一阶段允许内部逐步接线，但只能在 XPU-08～14 和对应故障测试全部完成后开启 Mock hard E2E。
-恢复或批量提交缺失的中间版本不能被标记为 Exact Alpha。
+恢复或批量提交缺失的中间步骤不能被标记为 Exact Alpha。
 
 ### XPU-08：side-effect-free Group planner
 
@@ -293,7 +299,7 @@ admission 读取失效 catalog/activation 时 fail closed。D6 的真实活动�
 - 基于 plan-owned NodeInfo clone 重放 CPU/内存/Pod 资源与已有固定成员；DeviceKey 独立去重，重叠 Domain 不重复计数。
 - 固定 Node 的 finalization 必须使用 AssignedNodes；不可局部换 Node/Device 后沿用旧 group plan。
 - 实现 deterministic Compact、bounded backtracking、search-state/domain/attempt/deadline budget；无解与预算耗尽使用不同 reason。
-- 返回完整 immutable placements、DomainSelections、assignments 和引用 fingerprint；规划阶段零 ledger/Adapter 副作用。
+- 返回完整 immutable placements、DomainSelections 和 assignments；规划阶段零 ledger/Adapter 副作用。
 
 **完成条件**：V4 §11.4 场景表全部变成表驱动测试；随机打乱输入仍得到相同 plan；greedy 失败但受限回溯可解的案例有覆盖；
 多 Pod 分别可放但合计 CPU/内存不足的候选被拒绝；调用 Fake 证明 planning 不访问外部 allocator。
@@ -319,7 +325,7 @@ admission 读取失效 catalog/activation 时 fail closed。D6 的真实活动�
 
 - 区分 Session TentativeReserved 和 live Held/Binding/Allocated/ReconcilePending；health 变化不释放 owner。
 - final reserve 对完整 DeviceKeys 做 all-or-nothing revalidation/CAS，任一冲突零修改；按稳定 key 加锁。
-- 只检查 plan 引用的 UID、membership、class descriptor、request 与 owner，不因无关全局 revision/heartbeat 改变而拒绝。
+- 只检查 plan 引用的 UID、membership、class、request 与 owner，不因无关全局 revision/heartbeat 改变而拒绝。
 - 实现 identity/capability registry、单 resource 单 exact owner；不与 deviceshare/DRA 对同一批设备重复 reserve。
 - 冻结 Reserve/PrepareBind/Commit/Compensate/Release/Recover/Reconcile、稳定 token/digest 与 handoff identity 校验。
 - Fake 可注入第 N 项失败、超时但实际成功、空结果、缺项、重复请求、旧 epoch 和迟到回复。
@@ -332,16 +338,16 @@ plan 缺一成员或请求/UID 改变时不能创建 reservation；现有 Node �
 
 **落点**：D2 选择的 durable store/Adapter record 与 PodGroup 引用；复用既有 status 更新能力，不预设新的 Group CRD。
 
-- 持久记录 GroupRef、PolicyFingerprint、descriptor/membership fingerprint、完整 assignment、PlanDigest、epoch、phase 和 CAS revision。
+- 持久记录 GroupRef、PolicyFingerprint、固定 class selections、完整 assignment、PlanDigest、epoch、phase 和 CAS revision。
 - 对每条 Group hard policy 保存一个 class-bearing selection；Pod policy 不制造共享 anchor。
 - 首次 exact handoff 前写 anchor/evidence；后续 wave 用固定 selection 校验完整计划。
 - Reserve 已成功但 scheduler evidence 尚未写入时发生崩溃，必须能从 backend durable reservation 恢复，不能留下不可枚举孤儿 owner。
 - 区分明确写失败与写结果未知；后者按稳定 record key/token 查询 reconciliation，不能以“不存在”重新分配。
-- 与 D6 活动状态检查衔接；policy mutation、descriptor 更新和新 reservation 的竞态必须由 CAS/fingerprint/fencing 收敛。
+- 与 D6 活动状态检查衔接；policy mutation 和新 reservation 的竞态必须由 CAS/fencing 收敛。
 - Group 终止且 reservation/allocation/reconciliation 全结束后才能 GC；旧 Node/class evidence tombstone 随 owner 清理。
 
 **完成条件**：`minAvailable=4, replicas=10` 首 wave 只放 4 个，后续 6 个仍锚定同一实例；重启后也成立；
-同名 class 的新 fingerprint 不能重解释旧 anchor；持久化超时和并发 mutation 都不会产生第二个 anchor/owner。
+固定 class 定义不能在运行期间被重解释；持久化超时和并发 mutation 都不会产生第二个 anchor/owner。
 
 ### XPU-12：全组 PreBind 与不可拆分 batch
 
@@ -392,7 +398,7 @@ checkpoint → complete plan → tentative Allocate
 - Evict/Deallocate/删除事件只发起 ReleaseRequested；Releasing、FutureIdle、nomination 不代表 ID 已可复用。
 - eviction 取消/回滚保留同一 owner；pipeline 仅持可重建 hint，设备释放后重新完整规划。
 - drain 同时检查非终态 policy、reservation、allocation、anchor、reconciliation；旧配置保持管理职责直至清空。
-- 节点重建、descriptor 更替、Fabric owner 替换的历史 evidence 可恢复，且不进入新候选。
+- 节点重建、Fabric owner 替换的活动 evidence 可恢复，且不进入新候选。
 
 **M3 完成条件**：用持久 Fake 在每个跨系统边界崩溃/重启，均无重复分配和错误 Free；旧 leader 注入无效；
 抢占发出到 Released 之前新请求始终不能占用 victim ID；drain 失败保持原配置，完成后才允许关闭。
@@ -401,7 +407,8 @@ checkpoint → complete plan → tentative Allocate
 
 ### XPU-15：真实 Exact Adapter
 
-**落点**：D4 选择的 backend/companion 与 Adapter 包；必要的 backend 修改单独建 PR，保持 protocol conformance 可复用。
+**落点**：NVIDIA Adapter 包及其 exact-ID enforcement/companion；必要的 NVIDIA Device Plugin、runtime 或 companion 修改单独建 PR，
+保持同一 protocol conformance 可在 nvml-mock 与真实节点复用。
 
 - 对真实 backend 实现 XPU-10 合同，复用 XPU-01 探针，不在 Filter/Score/Prepare 中重新运行 chooser 替换 DeviceIDs。
 - 建立 runtime identity 观测：plan、durable reservation、Pod/container 实际设备逐项关联，输出可审计证据。
@@ -430,7 +437,7 @@ unreconciled age、recovery 结果及低基数 reason。原始 DeviceID/PodUID/t
 
 性能报告必须用相同 workload/topology seed 比较：plugin disabled、enabled-no-policy、soft、Mock hard。
 记录 Node/Device/Domain/Fabric 数、Group 大小、scheduler P50/P95/P99、吞吐、CPU/RSS、锁等待、每轮分配量与 GC。
-补充无关 heartbeat、单 resource catalog 更新、Node churn、碎片和高冲突案例。
+补充无关 heartbeat、固定 catalog 缺失/非法、Node churn、碎片和高冲突案例。
 
 验收阈值在 M0 记录基线方法，M2 实测后冻结。可将 enabled-no-policy 的 P95 调度周期/CPU/RSS 相对增长不超过 5% 作为
 **待确认目标**，需多次重复测量与噪声范围；不能把它当作已测结果。hard 还必须遵守配置的 planning budget，不能无限搜索。
@@ -441,8 +448,8 @@ unreconciled age、recovery 结果及低基数 reason。原始 DeviceID/PodUID/t
 - 提供 direct PodGroup、VCJob、Deployment PodTemplate、StatefulSet、bare Pod；多副本示例解释自动 PodGroup 的 minMember 设置，
   不把 topology annotation 当成 gang 一次调度全部副本的保证。
 - Helm render 核对 scheduler/admission 同名 gate 与 plugin；保持默认安装关闭。
-- 演练升级、policy/catalog 修改、drain、关闭 plugin/gate、重启恢复、恢复配置；未知 owner 未清理前不能关闭其 recovery 路径。
-- 回滚到不含 xPU core guard 的旧二进制前，必须完成 drain 并处理存量 policy/schema；保留供恢复所需的旧 descriptor/evidence。
+- 演练升级、policy 变更、drain、关闭 plugin/gate、重启恢复、恢复配置；Alpha catalog 不允许运行期间修改；未知 owner 未清理前不能关闭其 recovery 路径。
+- 回滚到不含 xPU core guard 的旧二进制前，必须完成 drain 并处理存量 policy/schema；保留供恢复所需的活动 evidence。
 - V3 `tier/tierName` 用显式 catalog 映射迁移；没有发布过 V3 时也保留输入拒绝测试。
 - 发布说明分别列出 advisory、Mock exact、真实 Node-local、真实 Fabric 的验证范围与不支持请求形状。
 
@@ -457,11 +464,11 @@ unreconciled age、recovery 结果及低基数 reason。原始 DeviceID/PodUID/t
 | --- | --- | --- | --- |
 | T01 激活 | gate/plugin 四组合；非法参数；首次无效不调度；重载失败保留旧配置 | 02 | 单元 + 安装集成 |
 | T02 存量保护 | config/gate 失配时已有非空 policy、空 spec 的冲突 blocker 均不能走普通路径 | 02、04、13 | 调度集成 |
-| T03 canonicalization | typed/annotation 同义同 fingerprint；重复/乱序不变；未知/冲突字段拒绝 | 03、04 | 单元 + API server |
+| T03 canonicalization | typed/annotation 同义得到同一 canonical spec；重复/乱序不变；未知/冲突字段拒绝 | 03、04 | 单元 + API server |
 | T04 schema pruning | 旧 tier/tierName 在缺省客户端模式下仍被拒绝；生成不丢 CEL | 03 | 真实 API server |
 | T05 更新 | quiescent 成功、活动 mutation/删除失败；top-level 更新不留旧 SubJob policy；并发 reserve 无竞态 | 04、11、13 | controller + 调度集成 |
 | T06 身份 | 两 Node 同 source ID 不冲突；Node 同名换 UID 后 Pending；旧 update 不污染新 UID | 05、06 | 单元 + race |
-| T07 catalog | resource/scope/class 匹配；更新失效旧候选、保留旧 evidence；旧 plan 完整 recompile | 03、05、06、11 | 单元 + 集成 |
+| T07 catalog | 固定 resource/scope/class 匹配；catalog 缺失/非法时 fail closed；不产生第二份 class 定义 | 03、05、06 | 单元 + 集成 |
 | T08 Provider | invalid 不完成初次同步；freshness/generation 正确；ClearFacts 不释放活动 owner | 05、06、14 | 单元 + 集成 |
 | T09 Fabric authority | 单 owner 完整声明；member/owner 变更立即失效；同 HyperNode 不推导 Fabric | 05、06 | 单元 + E2E |
 | T10 Snapshot | 并发 publish 无新 Node/旧 UID 混合；旧 view 不变；RPC 不在锁内 | 06 | race + 压力 |
@@ -471,7 +478,7 @@ unreconciled age、recovery 结果及低基数 reason。原始 DeviceID/PodUID/t
 | T14 Group 完整性 | Ready 后新增、多个 SubGroup、多 resource、固定 Running 成员均纳入约束 | 08、09、11、13 | 调度集成 |
 | T15 规划边界 | 普通 Predicate 淘汰节点不复活；总 CPU/内存不超量；预算耗尽专用 reason | 08 | 单元 + benchmark |
 | T16 试算回滚 | trial 无外部调用；checkpoint 完整恢复；Save/Recover/Merge 无双 owner | 09 | 故障注入 |
-| T17 最终 hold | 任一 key 冲突零修改；无关 heartbeat 不使计划失效；引用 fingerprint 改变必须重算 | 10、13 | 并发 + 故障注入 |
+| T17 最终 hold | 任一 key 冲突零修改；无关 heartbeat 不使计划失效；引用的 Domain/Fabric membership 改变必须重算 | 10、13 | 并发 + 故障注入 |
 | T18 预绑定失败 | 第 N 项 Prepare/PreBind、anchor 写失败均零提前 Bind；prepared batch 不二次 PreBind | 11、12、13 | 调用计数 + API server |
 | T19 提交不确定 | Commit 成功而 accept 失败/未知；batch dispatch 后部分 Bind 成功正确对账 | 13、14 | 崩溃/故障注入 |
 | T20 释放 | Allocated 保留；Released 才 Free；Unknown/空/缺项/PodNotFound 不释放 | 10、14 | conformance + E2E |
@@ -541,7 +548,7 @@ go test ./pkg/controllers/podgroup ./pkg/controllers/job ./pkg/webhooks/admissio
 
 | 工作流 | 适合的并行安排 | 串行门槛 |
 | --- | --- | --- |
-| API/controller | 03/04 与 Provider 纯逻辑并行，基于冻结的 shared types/fixtures | catalog、fingerprint 与 mutation authority 先确定 |
+| API/controller | 03/04 与 Provider 纯逻辑并行，基于冻结的 shared types/fixtures | 固定 catalog 与 mutation authority 先确定 |
 | scheduler 基础 | 02 → 05/06 → 07；公开接口冻结后提前写 planner fixture | paired snapshot 验收完成才能发布 Advisory |
 | framework | 12 的 generic batch contract 可在 planner 开发时并行 | 09/10/11/12 全部完成才能连接完整 exact 主链 |
 | Adapter | 01 提前，协议冻结后 15 与 scheduler 事务开发并行 | 真实验收依赖 13/14；不能用 Fake 代替 |

@@ -1,0 +1,245 @@
+apiVersion: xpu-topology.volcano.sh/contract-fixtures/v1alpha0
+kind: ContractFixtureSet
+metadata:
+  name: xpu-00-v4
+  description: >-
+    Declarative contract cases for XPU-00. These are specifications for later
+    unit, API-server, Fake Adapter, and E2E tests; they are not executable tests.
+cases:
+  - id: canonical-equivalent-order-defaults
+    category: canonicalization
+    inputs:
+      - policies:
+          - resourceName: nvidia.com/gpu
+            domain: {scope: Node, domainClass: local-scale-up}
+          - resourceName: example.com/npu
+            mode: soft
+            applyTo: Group
+            domain: {scope: Fabric, domainClass: scale-up-fabric}
+      - policies:
+          - applyTo: Group
+            domain: {domainClass: scale-up-fabric, scope: Fabric}
+            resourceName: example.com/npu
+            mode: soft
+          - applyTo: Pod
+            mode: hard
+            resourceName: nvidia.com/gpu
+            domain: {domainClass: local-scale-up, scope: Node}
+    expect:
+      result: accepted
+      samePolicyFingerprint: true
+
+  - id: class-name-scoped-by-resource-and-domain-scope
+    category: catalog
+    catalog:
+      descriptors:
+        - {resourceName: nvidia.com/gpu, scope: Node, name: scale-up}
+        - {resourceName: example.com/npu, scope: Node, name: scale-up}
+        - {resourceName: example.com/npu, scope: Fabric, name: scale-up}
+    expect:
+      result: accepted
+      distinctDomainClassKeys: 3
+
+  - id: legacy-tier-rejected
+    category: schema
+    input:
+      policies:
+        - resourceName: nvidia.com/gpu
+          domain: {scope: Node, tierName: nvlink}
+    expect:
+      result: rejected
+      reason: XPUTopologyLegacyField
+
+  - id: unknown-class-authoring-error
+    category: canonicalization
+    input:
+      policies:
+        - resourceName: nvidia.com/gpu
+          mode: soft
+          domain: {scope: Node, domainClass: does-not-exist}
+    expect:
+      result: rejected
+      reason: XPUTopologyDomainClassUnknown
+      fallbackToAnyClass: false
+
+  - id: node-domain-fragmented-6-plus-2
+    category: planning
+    domains:
+      - key: node-a/domain-0
+        class: {resourceName: example.com/npu, scope: Node, name: local-scale-up}
+        freeDeviceIDs: [npu0, npu1, npu2, npu3, npu4, npu5]
+      - key: node-a/domain-1
+        class: {resourceName: example.com/npu, scope: Node, name: local-scale-up}
+        freeDeviceIDs: [npu6, npu7]
+    request:
+      resourceName: example.com/npu
+      count: 8
+      policy: {applyTo: Pod, mode: hard, scope: Node, domainClass: local-scale-up}
+    expect:
+      result: unschedulable
+      reason: XPUTopologyDomainInsufficient
+      aggregateAcrossDomains: false
+
+  - id: pod-node-may-select-different-domains
+    category: quantifier
+    request:
+      pods: [p0, p1]
+      policy: {applyTo: Pod, mode: hard, scope: Node, domainClass: local-scale-up}
+    candidatePlacements:
+      p0: node-a/domain-0
+      p1: node-b/domain-0
+    expect: {result: accepted, sharedAnchor: false}
+
+  - id: group-node-must-share-one-domain
+    category: quantifier
+    request:
+      pods: [p0, p1]
+      policy: {applyTo: Group, mode: hard, scope: Node, domainClass: local-scale-up}
+    candidatePlacements:
+      p0: node-a/domain-0
+      p1: node-b/domain-0
+    expect: {result: unschedulable, sharedAnchor: true}
+
+  - id: pod-fabric-may-select-different-fabrics
+    category: quantifier
+    request:
+      pods: [p0, p1]
+      policy: {applyTo: Pod, mode: hard, scope: Fabric, domainClass: scale-up-fabric}
+    candidatePlacements: {p0: fabric-f1, p1: fabric-f2}
+    expect: {result: accepted, sharedAnchor: false}
+
+  - id: group-fabric-must-share-one-fabric
+    category: quantifier
+    request:
+      pods: [p0, p1]
+      policy: {applyTo: Group, mode: hard, scope: Fabric, domainClass: scale-up-fabric}
+    candidatePlacements: {p0: fabric-f1, p1: fabric-f2}
+    expect: {result: unschedulable, sharedAnchor: true}
+
+  - id: node-and-fabric-and
+    category: composition
+    request:
+      pods: [p0, p1]
+      policies:
+        - {resourceName: example.com/npu, applyTo: Pod, mode: hard, domain: {scope: Node, domainClass: local-scale-up}}
+        - {resourceName: example.com/npu, applyTo: Group, mode: hard, domain: {scope: Fabric, domainClass: scale-up-fabric}}
+    candidatePlacements:
+      p0: {localDomain: node-a/hccs-0, fabric: fabric-f1}
+      p1: {localDomain: node-b/hccs-0, fabric: fabric-f1}
+    expect: {result: accepted, allPoliciesSatisfied: true}
+
+  - id: statement-multiple-subgroups-resources
+    category: ownership
+    statement:
+      admissionSet: [p0, p1, p2, p3]
+      groupRefs: [job-uid/main, job-uid/worker]
+      resourceOwners: [example.com/npu, nvidia.com/gpu]
+    injection: {owner: nvidia.com/gpu, operation: Prepare, failAtItem: 2}
+    expect:
+      result: rejected
+      acceptedBindBatchCount: 0
+      kubernetesBindCount: 0
+      duplicateAssignmentOwners: 0
+      compensateAllEarlierOwners: true
+
+  - id: backfill-hard-bypass-blocked
+    category: action-guard
+    action: backfill
+    workload: {hasHardDeviceTopologyPolicy: true}
+    expect:
+      result: rejected
+      reason: XPUTopologyActionNotSupported
+      sessionAllocateCalls: 0
+      kubernetesBindCount: 0
+
+  - id: activity-fence-wins
+    category: mutation-race
+    initial: {resourceVersion: "10", state: Quiescent, policyFingerprint: fp-a}
+    race:
+      - {actor: scheduler, operation: statusCAS, resourceVersion: "10", state: Reserving}
+      - {actor: user, operation: specUpdate, resourceVersion: "10", policyFingerprint: fp-b}
+    winner: scheduler
+    expect:
+      specUpdate: conflictThenRejectedAsActive
+      reservationsForFingerprint: [fp-a]
+
+  - id: spec-update-wins
+    category: mutation-race
+    initial: {resourceVersion: "10", state: Quiescent, policyFingerprint: fp-a}
+    race:
+      - {actor: user, operation: specUpdate, resourceVersion: "10", policyFingerprint: fp-b}
+      - {actor: scheduler, operation: statusCAS, resourceVersion: "10", state: Reserving}
+    winner: user
+    expect:
+      schedulerStatusCAS: conflict
+      reservationsForFingerprint: []
+      requiresRecompile: true
+
+  - id: prebind-member-n-fails-zero-bind
+    category: batch-bind
+    batch: [p0, p1, p2]
+    injection: {operation: PreBind, pod: p1, result: error}
+    expect:
+      result: rejected
+      rolledBackPreBindPods: [p0]
+      acceptedBindBatchCount: 0
+      kubernetesBindCount: 0
+
+  - id: release-missing-is-unknown
+    category: reconciliation
+    requests: [reservation-a, reservation-b]
+    adapterResults:
+      - {reservationID: reservation-a, state: Released}
+    expect:
+      reservation-a: {state: Free}
+      reservation-b: {state: ReconcilePending, inferredRelease: false}
+
+  - id: old-epoch-rejected
+    category: fencing
+    currentOwner: {reservationID: reservation-a, schedulerEpoch: epoch-2}
+    request: {operation: Commit, reservationID: reservation-a, schedulerEpoch: epoch-1}
+    expect:
+      result: rejected
+      reason: XPUTopologyStaleSchedulerEpoch
+      ownerUnchanged: true
+
+  - id: nvidia-nvml-mock-selected-uuid-idempotent
+    category: adapter-conformance
+    environment:
+      vendor: NVIDIA
+      providerID: nvidia-nvml-v1
+      identityNamespace: nvidia.com
+      resourceName: nvidia.com/gpu
+      discovery: nvml-mock
+      allocationRegistration: NVIDIA Device Plugin
+    inventory:
+      nodeUID: node-uid-a
+      deviceIDs: [GPU-aaaa, GPU-bbbb, GPU-cccc, GPU-dddd]
+    requests:
+      - {operation: ReserveAndPrepare, reservationID: reservation-a, planDigest: digest-a, selectedDeviceIDs: [GPU-cccc]}
+      - {operation: ReserveAndPrepare, reservationID: reservation-a, planDigest: digest-a, selectedDeviceIDs: [GPU-cccc]}
+    expect:
+      result: accepted
+      assignments:
+        - [GPU-cccc]
+        - [GPU-cccc]
+      adapterChangedSelectedID: false
+      provesRealHardwareRuntimeIdentity: false
+
+  - id: nvidia-real-runtime-id-gate
+    category: real-hardware-gate
+    environment:
+      vendor: NVIDIA
+      discovery: real-nvml
+      runtime: NVIDIA-container-runtime
+    plan:
+      podUID: pod-uid-a
+      containerName: trainer
+      resourceName: nvidia.com/gpu
+      nodeUID: node-uid-a
+      deviceIDs: [GPU-cccc]
+    observedRuntime: {deviceIDs: [GPU-cccc]}
+    expect:
+      result: accepted
+      requiredForMilestone: M4
+      mockResultCanSubstitute: false
