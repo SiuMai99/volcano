@@ -4,7 +4,7 @@ metadata:
   name: xpu-00-v4
   description: >-
     Declarative contract cases for XPU-00. These are specifications for later
-    unit, API-server, Fake Adapter, and E2E tests; they are not executable tests.
+    unit, API-server, Fake Provider, and E2E tests; they are not executable tests.
 cases:
   - id: canonical-equivalent-order-defaults
     category: canonicalization
@@ -129,18 +129,21 @@ cases:
     expect: {result: accepted, allPoliciesSatisfied: true}
 
   - id: statement-multiple-subgroups-resources
-    category: ownership
+    category: composition
     statement:
       admissionSet: [p0, p1, p2, p3]
       groupRefs: [job-uid/main, job-uid/worker]
-      resourceOwners: [example.com/npu, nvidia.com/gpu]
-    injection: {owner: nvidia.com/gpu, operation: Prepare, failAtItem: 2}
+      resources: [example.com/npu, nvidia.com/gpu]
+    plan:
+      p0: {group: job-uid/main, resource: example.com/npu, deviceKeys: [node-a/npu0]}
+      p1: {group: job-uid/main, resource: example.com/npu, deviceKeys: [node-a/npu1]}
+      p2: {group: job-uid/worker, resource: nvidia.com/gpu, deviceKeys: [node-b/GPU-aaaa]}
+      p3: {group: job-uid/worker, resource: nvidia.com/gpu, deviceKeys: [node-b/GPU-bbbb]}
     expect:
-      result: rejected
-      acceptedBindBatchCount: 0
-      kubernetesBindCount: 0
-      duplicateAssignmentOwners: 0
-      compensateAllEarlierOwners: true
+      result: accepted
+      onePlacementPerTask: true
+      assignmentAnnotationPerPod: true
+      externalAllocationCalls: 0
 
   - id: backfill-hard-bypass-blocked
     category: action-guard
@@ -152,31 +155,90 @@ cases:
       sessionAllocateCalls: 0
       kubernetesBindCount: 0
 
-  - id: activity-fence-wins
-    category: mutation-race
-    initial: {resourceVersion: "10", state: Quiescent, policyFingerprint: fp-a}
-    race:
-      - {actor: scheduler, operation: statusCAS, resourceVersion: "10", state: Reserving}
-      - {actor: user, operation: specUpdate, resourceVersion: "10", policyFingerprint: fp-b}
-    winner: scheduler
+  - id: bound-pod-anchor-recovery
+    category: pod-derived-anchor
+    groupRef: job-uid/main
+    pods:
+      - name: worker-0
+        phase: Running
+        nodeName: node-a
+        nodeUID: node-uid-a
+        assignment: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-a/GPU-aaaa]}
+      - name: worker-1
+        phase: Bound
+        nodeName: node-b
+        nodeUID: node-uid-b
+        assignment: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-b/GPU-bbbb]}
+    topology:
+      fabric: {key: fabric-f1, members: [node-uid-a/GPU-aaaa, node-uid-b/GPU-bbbb]}
     expect:
-      specUpdate: conflictThenRejectedAsActive
-      reservationsForFingerprint: [fp-a]
+      result: recovered
+      anchor: {scope: Fabric, domainClass: scale-up-fabric, fabricKey: fabric-f1}
+      source: pod-nodeName-and-assignment
+      podGroupSummaryRequired: false
 
-  - id: spec-update-wins
-    category: mutation-race
-    initial: {resourceVersion: "10", state: Quiescent, policyFingerprint: fp-a}
-    race:
-      - {actor: user, operation: specUpdate, resourceVersion: "10", policyFingerprint: fp-b}
-      - {actor: scheduler, operation: statusCAS, resourceVersion: "10", state: Reserving}
-    winner: user
+  - id: xpu-assignment-annotation-persisted
+    category: pod-derived-assignment
+    input:
+      task: worker-0
+      nodeName: node-a
+      nodeUID: node-uid-a
+      selectedDeviceKeys: [node-uid-a/GPU-aaaa]
     expect:
-      schedulerStatusCAS: conflict
-      reservationsForFingerprint: []
-      requiresRecompile: true
+      result: accepted
+      podAnnotation:
+        key: volcano.sh/xpu-assignment
+        value: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-a/GPU-aaaa]}
+      nodeNameDuplicatedInAnnotation: false
+
+  - id: xpu-assignment-missing-pending
+    category: pod-derived-anchor
+    groupRef: job-uid/main
+    pods:
+      - name: worker-0
+        phase: Running
+        nodeName: node-a
+        nodeUID: node-uid-a
+        assignment: null
+    expect:
+      result: pending
+      reason: XPUAssignmentNotEnforceable
+      anchorCreated: false
+
+  - id: xpu-assignment-conflict-pending
+    category: pod-derived-anchor
+    groupRef: job-uid/main
+    pods:
+      - name: worker-0
+        phase: Running
+        nodeName: node-a
+        nodeUID: node-uid-a
+        assignment: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-a/GPU-aaaa]}
+      - name: worker-1
+        phase: Running
+        nodeName: node-b
+        nodeUID: node-uid-b
+        assignment: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-b/GPU-cccc]}
+    topology:
+      fabrics: [fabric-f1, fabric-f2]
+    expect:
+      result: pending
+      reason: XPUFabricDomainUnavailable
+      anchorCreated: false
+      secondFabricSelected: false
+
+  - id: xpu-node-replacement-rejected
+    category: node-identity
+    pod: {name: worker-0, phase: Running, nodeName: node-a, nodeUID: node-uid-old}
+    assignment: {version: 1, resourceName: nvidia.com/gpu, provider: nvidia-nvml-v1, deviceKeys: [node-uid-old/GPU-aaaa]}
+    observedNode: {name: node-a, uid: node-uid-new}
+    expect:
+      result: pending
+      reason: XPUTopologyDataNotReady
+      oldAssignmentMappedToNewNode: false
 
   - id: prebind-member-n-fails-zero-bind
-    category: batch-bind
+    category: post-alpha-exact-batch-bind
     batch: [p0, p1, p2]
     injection: {operation: PreBind, pod: p1, result: error}
     expect:
@@ -186,7 +248,7 @@ cases:
       kubernetesBindCount: 0
 
   - id: release-missing-is-unknown
-    category: reconciliation
+    category: post-alpha-exact-reconciliation
     requests: [reservation-a, reservation-b]
     adapterResults:
       - {reservationID: reservation-a, state: Released}
@@ -195,7 +257,7 @@ cases:
       reservation-b: {state: ReconcilePending, inferredRelease: false}
 
   - id: old-epoch-rejected
-    category: fencing
+    category: post-alpha-exact-fencing
     currentOwner: {reservationID: reservation-a, schedulerEpoch: epoch-2}
     request: {operation: Commit, reservationID: reservation-a, schedulerEpoch: epoch-1}
     expect:
@@ -204,7 +266,7 @@ cases:
       ownerUnchanged: true
 
   - id: nvidia-nvml-mock-selected-uuid-idempotent
-    category: adapter-conformance
+    category: provider-conformance
     environment:
       vendor: NVIDIA
       providerID: nvidia-nvml-v1
@@ -216,15 +278,16 @@ cases:
       nodeUID: node-uid-a
       deviceIDs: [GPU-aaaa, GPU-bbbb, GPU-cccc, GPU-dddd]
     requests:
-      - {operation: ReserveAndPrepare, reservationID: reservation-a, planDigest: digest-a, selectedDeviceIDs: [GPU-cccc]}
-      - {operation: ReserveAndPrepare, reservationID: reservation-a, planDigest: digest-a, selectedDeviceIDs: [GPU-cccc]}
+      - {operation: SelectAndValidateAssignment, podUID: pod-uid-a, selectedDeviceIDs: [GPU-cccc]}
+      - {operation: ValidateAssignment, podUID: pod-uid-a, selectedDeviceIDs: [GPU-cccc]}
     expect:
       result: accepted
       assignments:
         - [GPU-cccc]
         - [GPU-cccc]
-      adapterChangedSelectedID: false
-      provesRealHardwareRuntimeIdentity: false
+      providerChangedSelectedID: false
+      assignmentAnnotation: {provider: nvidia-nvml-v1, deviceKeys: [node-uid-a/GPU-cccc]}
+      provesExternalReservationRecovery: false
 
   - id: nvidia-real-runtime-id-gate
     category: real-hardware-gate
@@ -241,5 +304,5 @@ cases:
     observedRuntime: {deviceIDs: [GPU-cccc]}
     expect:
       result: accepted
-      requiredForMilestone: M4
+      requiredForMilestone: post-alpha-exact
       mockResultCanSubstitute: false

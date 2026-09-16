@@ -10,15 +10,16 @@
 ## 1. XPU-00 的完成边界
 
 XPU-00 不新增 feature gate、CRD 字段、scheduler plugin 或 Adapter 实现。它只解决如果不先统一、会导致
-XPU-02～15 跨组件返工的合同问题。
+XPU-02～15 跨组件返工的合同问题。Alpha 的 anchor 采用现有 HyperNode 同类的 Pod-derived 方案，不新增独立的
+Group evidence store 或 active-active reservation owner。
 
 完成 XPU-00 需要同时具备：
 
 1. D1～D8 每项都有一个明确的 Alpha 实现基线、不可缩减的底线和变更触发条件；
-2. Public/canonical、activity/evidence、Statement exact commit、batch handoff 和 Adapter probe 有最小接口草案；
+2. Public/canonical、Pod-derived anchor、Pod assignment annotation、Statement 与 Adapter probe 有最小接口草案；
 3. `allocate/backfill/preempt/reclaim/gang*/shuffle` 的 hard/soft 行为有支持矩阵，不存在未声明的 bind/release 旁路；
-4. 跨系统失败顺序、唯一 owner 转移点和 `Allocated/Released/Unknown` 结果有反例；
-5. 正反例 fixture 具有稳定 case ID，可被后续单元、API server、Fake Adapter 和 E2E 复用；
+4. Pod 已绑定后的 anchor 恢复、annotation 缺失/冲突和单 leader 失败行为有反例；
+5. 正反例 fixture 具有稳定 case ID，可被后续单元、API server、Fake Provider 和 E2E 复用；
 6. 尚需社区或真实 backend 证明的内容明确标为评审项，不伪装成已实现事实。
 
 本文中的状态含义：
@@ -35,13 +36,13 @@ XPU-02～15 跨组件返工的合同问题。
 | ID | Alpha 实现基线 | 状态 | owner 角色 | 首个消费者 |
 | --- | --- | --- | --- | --- |
 | D1 catalog 权威载体 | 一份固定内容的 immutable ConfigMap 保存 Alpha catalog；scheduler/controller/webhook/Provider 只读，运行期间不支持修改 | `FrozenForAlpha` | A | XPU-03/04/05 |
-| D2 anchor/evidence 载体 | `EvidenceStore` 逻辑合同；首选由 exact Adapter 的 durable record 实现，PodGroup status 只保存 activity fence 和引用 | `ProbePending` | S/R | XPU-11/14/15 |
-| D3 framework 扩展 | winning `Statement` 持有唯一 `ExactCommitCoordinator`；新增 error-returning exact commit 和不可拆分 batch，不建立第二个调度事务系统 | `CommunityReview` | S | XPU-09/12/13 |
-| D4 首个真实 Adapter | 厂商目标冻结为 NVIDIA；XPU-01 用 `nvml-mock + NVIDIA Device Plugin + NVIDIA Adapter` 探测 Node-local、单 Container、整卡 exact-ID 路径 | `ProbePending` | R | XPU-01/15 |
+| D2 anchor/assignment 载体 | Alpha 从已绑定 Pod 的 `spec.nodeName` 与受控 XPU assignment annotation 重建 anchor；可选的 PodGroup 摘要只作索引，不作唯一事实源；不引入 `EvidenceStore` | `FrozenForAlpha` | S | XPU-11 |
+| D3 framework 扩展 | Alpha 复用现有 Statement/逐 Pod Bind；完整 exact coordinator、不可拆分 batch 和跨系统事务延后 | `Deferred` | S | 后续 exact |
+| D4 首个 Provider/identity | Alpha 只要求 Provider/Device Plugin 能消费或确认 Pod assignment annotation；durable reservation/recovery/release 留给后续 exact | `ProbePending` | R | XPU-01/15 |
 | D5 API/schema | V4 `DeviceTopologySpec`；class 为 DNS-1123 label；严格 JSON；固定数量/大小上限；served schema 用 reject-only tombstone 拒绝旧字段 | `FrozenForAlpha` | A | XPU-03/04 |
-| D6 authoring/activity | PodGroup status 中的 `ActivityFence` 与 spec resourceVersion/generation 做 CAS；先成功写 fence，才允许 final reserve | `FrozenForAlpha` | A/S | XPU-04/11/13 |
-| D7 激活/action | scheduler/admission 同名 gate + scheduler plugin + 固定 catalog/owner readiness 共同决定 activation；不支持 exact 的 action 对 hard 明确阻断 | `FrozenForAlpha` | S | XPU-02/13/14 |
-| D8 组合/所有权 | 一个 winning Statement 一个 commit context；其中可含多个 GroupRef/资源 owner，但每个 Task 只有一份最终 placement，全部约束取交集 | `FrozenForAlpha` | S/R | XPU-08～14 |
+| D6 authoring/activity | anchor 建立后禁止 topology policy semantic mutation；复用 PodGroup spec 的现有 resourceVersion/generation 校验，不新增 `ActivityFence` | `FrozenForAlpha` | A/S | XPU-04/11 |
+| D7 激活/action | scheduler/admission 同名 gate + scheduler plugin + 固定 catalog/Provider readiness 共同决定 activation；不能生成 assignment 的 action 对 hard 明确阻断 | `FrozenForAlpha` | S | XPU-02/13/14 |
+| D8 组合/状态归属 | 一个 winning Statement 一个最终 placement context；其中可含多个 GroupRef/资源，但每个 Task 只有一份最终 placement，全部约束取交集 | `FrozenForAlpha` | S/R | XPU-08/11/13 |
 
 ## 3. D1：catalog 权威载体
 
@@ -78,52 +79,85 @@ ConfigMap 是 Alpha 的固定交付形状。这里的 `ResourceTopologyDescripto
 catalog 表达管理员定义的稳定 class；HyperNode 描述网络层次，Node annotation 是 Provider observation。二者都不能同时作为
 workload selector 的权威字典，否则同一个 `domainClass` 会被不同进程、不同 Session 或不同 Node 重解释。
 
-## 4. D2：Group anchor 与 allocation evidence
+## 4. D2：Pod-derived Group anchor 与 XPU assignment annotation
 
-### 4.1 选择
+### 4.1 Alpha 选择
 
-冻结一个存储无关的 `EvidenceStore` 合同。首个真实 Exact Adapter 必须提供或伴随一个 durable 实现；PodGroup status 不保存
-完整 DeviceIDs/token，只保存 activity fence、record key/revision 和可解释状态摘要。
+Alpha 不新增 `EvidenceStore`、Group durable record、PodGroup activity status 或独立 reservation ledger。anchor 复用现有
+HyperNode 的恢复思路：scheduler session 从已经绑定/运行中的 Group 成员 Pod 重建它。
 
-```go
-// Contract draft only. Names and package placement remain subject to review.
-type EvidenceStore interface {
-    CompareAndCreateGroup(context.Context, GroupEvidenceRecord, string) (RecordRevision, error)
-    CompareAndUpdateGroup(context.Context, GroupEvidenceRecord, RecordRevision) (RecordRevision, error)
-    GetGroup(context.Context, TopologyGroupRef) (GroupEvidenceRecord, RecordRevision, error)
-    ListUnfinished(context.Context, ResourceOwnerRef) ([]GroupEvidenceRecord, error)
-}
+每个已绑定成员提供两类事实：
 
-type GroupEvidenceRecord struct {
-    GroupRef                  TopologyGroupRef
-    PolicyFingerprint         string
-    GroupSelections           []TopologyDomainSelection
-    Assignments               []TopologyTaskPlacement
-    PlanID                    string
-    PlanDigest                string
-    ReservationIDs           []string
-    SchedulerEpoch            string
-    Phase                     EvidencePhase
+```text
+Pod.spec.nodeName
+  -> Kubernetes 已确认的 Node placement
+
+volcano.sh/xpu-assignment
+  -> 该 Pod 的 scheduler/provider assignment（resource + canonical DeviceKeys）
+```
+
+建议的最小 annotation payload：
+
+```json
+{
+  "version": 1,
+  "resourceName": "nvidia.com/gpu",
+  "provider": "nvidia-nvml-v1",
+  "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
 }
 ```
 
-`GroupRef + PolicyFingerprint` 是稳定 record key 的输入；`RecordRevision` 是 store 返回的 CAS revision，不能由 scheduler 自增猜测。
-同一 Group 的多个 admission wave 更新同一记录；不同 policy fingerprint 不得覆盖活动记录。
+`NodeName` 不重复写入 annotation；`deviceKeys` 必须包含能区分 Node replacement 的 canonical identity，不能只写 GPU index。
+单容器整卡 Alpha 不要求把 `ContainerName`、reservation token 或完整 plan 写入 annotation。
+如需快速检索，可选增加 `localDomainKeys`、`fabricKeys`、`groupRef` 或 `planDigest` 等派生索引字段；这些字段都必须能从
+`NodeName + deviceKeys + 当前 topology snapshot` 重建，缺失、过期或冲突时不能阻止重建，也不能成为第二份权威事实。
 
-### 4.2 不允许的替代
+Group anchor 是本次 Session 中从这些已绑定成员推导出的内存对象，而不是新的 API 对象：
 
-- Pod annotation、Node annotation、scheduler 内存或 log 不能作为 durable evidence；
-- PodGroup Condition 只能表达用户可见状态，不能替代完整 assignment record；
-- Adapter `Release()` 返回 nil、Pod NotFound、Recover 列表缺项或超时不能证明 Released；
-- 如果 XPU-01 证明候选 backend 无法 CAS、枚举恢复或给出 Released，M4 阻塞；不得静默退化为“内存 ledger + hard”。
+```go
+type PodDerivedGroupAnchor struct {
+    GroupRef        TopologyGroupRef
+    ResourceName   corev1.ResourceName
+    Scope          DeviceTopologyDomainScope
+    Class          DomainClassKey
+    LocalDomainKey *LocalDomainKey
+    FabricKey      *FabricKey
+}
+```
 
-如果社区不接受 Adapter-backed store，需为独立受控存储另开 ADR，并重新评估 XPU-11/14/15；逻辑合同和测试不变。
+`PodGroup` annotation 可以保存一个可解释的 anchor 摘要以便快速索引，但必须能够从成员 Pod 重新计算；摘要丢失或过期时，
+scheduler 重新扫描 Pod，不把摘要当成第二份权威账本。
 
-## 5. D3：framework 与 bind batch
+恢复算法固定为：
 
-### 5.1 选择最小 Exact coordinator
+1. 从 scheduler cache 找到该 Group 已绑定/运行的成员，使用现有 `AllocatedStatus` 与非空 `NodeName` 过滤；
+2. 解析每个成员的 `xpu-assignment`，并用当前 immutable topology snapshot 将 `Node + DeviceKeys` 映射到 Domain/Fabric；
+3. `Group + Node` 要求所有成员落在同一个 LocalDomain，`Group + Fabric` 要求所有成员存在共同 Fabric；
+4. 结果一致时写入本次 Session 的 `JobInfo/SubJobInfo` anchor；缺失、冲突或无法映射时，hard Group Pending，不选择第二个实例；
+5. 没有已绑定成员时不建立 Group anchor，首个 admission wave 使用本次 Session 的 plan；Bind 后的下一个 Session 再从 Pod 恢复。
 
-Alpha 不向所有普通 `Statement.Commit()` 注入任意 participant，也不新建平行 Statement。只有包含 hard xPU 新 Allocate 的
+同一 Session 内尚未 Bind 的成员只使用 Statement/JobInfo 中的试算 plan，不要求提前写入 PodGroup。Alpha 只允许一个 active
+scheduler leader 负责该调度路径，不设计两个 scheduler 同时更新同一 Group 的 owner 语义。
+
+### 4.2 权威边界与后续能力
+
+- 未绑定 Pod 上的同名 annotation 只是用户输入或计划，不能建立 Group anchor；
+- 已绑定 Pod 的 assignment annotation 只有在 scheduler/provider 明确拥有该 key，且 assignment 能通过当前 Node/topology
+  facts 校验时，才可作为 Alpha 的恢复事实；
+- PodGroup anchor 摘要、metrics 和 log 都是可重建的索引/诊断信息，不是 allocation ledger；
+- Alpha 不承诺 scheduler/Adapter 崩溃后的外部 reservation 对账、authoritative Released 三态或 active-active fencing；
+- 共享/分数设备、MIG/vGPU、DRA Claim 和多 Container 的 assignment 语义延期，不通过 annotation 猜测。
+
+如果后续需要在 Pod 消失后仍恢复外部 reservation，届时再为具体 Adapter 设计 durable record；它不属于 Alpha 的 D2 合同。
+
+## 5. D3：framework 与 bind batch（后续 Exact，不属于 Alpha）
+
+> D3 的完整 coordinator、不可拆分 batch 和跨系统事务是后续 Exact 能力。本 Alpha 只复用现有
+> `Statement` 与逐 Pod Bind；本节保留接口草案，避免未来 Exact 的边界被误解为 Alpha 承诺。
+
+### 5.1 后续 Exact 的 coordinator 草案
+
+后续 Exact 不向所有普通 `Statement.Commit()` 注入任意 participant，也不新建平行 Statement。只有包含 hard xPU 新 Allocate 的
 winning Statement 走 error-returning exact 路径，并且只有一个 coordinator：
 
 ```go
@@ -155,7 +189,7 @@ func (s *Statement) CommitExact(
 - `Merge` 只能显式转移一次 exact context；source 转移后不能 Commit/Abort；
 - 普通 workload 继续使用现有 `Commit()`，保持兼容。
 
-### 5.2 完整 batch 接口
+### 5.2 后续 Exact 的完整 batch 接口
 
 ```go
 // Contract draft only.
@@ -180,9 +214,9 @@ type BatchBinder interface {
 当前 `AddBindTask()`、`executePreBinds()` 和 `batchNum` 不能拼装出此保证；XPU-12 必须增加新的不可拆分 queue item，而不是循环调用
 单项接口。
 
-## 6. D4：首个真实 Adapter 与 XPU-01 输入
+## 6. D4：首个 Provider identity 与 XPU-01 输入
 
-首个 Adapter 的**设备厂商和资源目标冻结为 NVIDIA**；首版 trusted identity contract 建议固定为：
+首个 Provider 的**设备厂商和资源目标冻结为 NVIDIA**；首版 trusted identity contract 建议固定为：
 
 ```text
 Vendor:        NVIDIA
@@ -199,7 +233,7 @@ Discovery API: NVML（测试环境可由 nvml-mock 提供）
 | --- | --- | --- |
 | `nvml-mock` | 模拟 NVIDIA UUID、型号、显存、PCI/NUMA、NVLink/NVSwitch、健康事件和 NVML 调用 | 真实 GPU 算力、CUDA/NCCL 性能、真实硬件故障隔离 |
 | NVIDIA Device Plugin | 基于 mock driver root 注册 `nvidia.com/gpu`，验证 ListAndWatch/Allocate 和 kubelet 注入链 | 原生 Device Plugin API 已接受 Volcano 指定 UUID |
-| NVIDIA Adapter | 接受 scheduler-selected GPU UUID，负责 reservation、幂等、epoch、Recover/Reconcile/Released | Kubernetes 多 Pod Bind 原子性 |
+| NVIDIA Provider/Device Plugin | Alpha 中验证能消费或确认 Pod 上的 scheduler-selected GPU UUID；reservation、幂等、Recover/Reconcile/Released 属于后续 Exact | Kubernetes 多 Pod Bind 原子性 |
 | 真实 NVIDIA 节点 | 在 M4 核验实际容器可见 UUID 等于 plan，并补真实重启/释放证据 | 未实际覆盖的 Fabric、MIG/vGPU 能力 |
 
 HAMi 可以作为 NVIDIA 分配实现或 companion 方案的参考，但它不是底层设备厂商。若未来采用 HAMi-backed source/Adapter，
@@ -210,18 +244,18 @@ XPU-01 使用独立 harness，不依赖尚未实现的 scheduler plugin，并分
 
 1. **nvml-mock conformance**：
    - 枚举稳定 GPU UUID/topology/health，并与 Node `nvidia.com/gpu` 数量对账；
-   - 让 NVIDIA Adapter 指定一个非默认 UUID；相同 token 重试得到同一 assignment；
-   - 重启 Adapter owner 后枚举未完成记录；缺项按 Unknown；
-   - Release 返回 owner-matched Released evidence；旧 epoch/过期 token 被拒绝；
-   - 注入超时但实际成功、空结果、缺项和健康变化，验证不会错误 Free。
+   - 让 Provider/Device Plugin 消费一个非默认 UUID，并确认最终 Pod assignment annotation 与该 UUID 一致；
+   - 同一 Pod 的 assignment annotation 重读后得到稳定的 canonical DeviceKey；
+   - 注入缺失、格式非法、Node replacement 和 topology 映射冲突，验证 scheduler 不会错误建立 Group anchor；
+   - reservation、Release、epoch、超时对账等 durable lifecycle 留作后续 Exact，不作为 Alpha 放行条件。
 2. **真实 NVIDIA runtime gate（M4 前必须补）**：
    - 从实际容器/NVIDIA runtime 读回 Device UUID，与 PodUID、ContainerName、ResourceName、NodeUID、plan DeviceIDs 对照；
    - 验证真实进程重启、释放后复用和至少一套 Node-local exact-ID 环境；
    - 若声明 Fabric，再补真实 NVLink/NVSwitch membership 与跨 Node/模块身份核验。
 
-`nvml-mock` 可以完成 XPU-01 的大部分协议和故障模拟，但 Mock 通过不自动升级为“真实硬件已验收”。如果 NVIDIA Adapter 仍只能让
+`nvml-mock` 可以完成 XPU-01 的大部分身份、annotation 和拓扑映射测试，但 Mock 通过不自动升级为“真实硬件已验收”。如果 NVIDIA Adapter 仍只能让
 kubelet/Device Plugin 自主选择 UUID，而不能执行 scheduler-selected UUID，则结论为 `XPUAssignmentNotEnforceable`；Advisory 和 Mock
-协议开发仍可继续，M4 不放行。
+协议开发仍可继续，Alpha 只允许该 workload 进入 Pending；后续 Exact 再决定是否需要阻断整个 backend。
 
 ## 7. D5：Public API、schema 与 canonicalization
 
@@ -267,41 +301,25 @@ func CanonicalizeDeviceTopology(
 `CatalogView` 是已加载的固定 catalog，调用期间不能变化。unknown class 是 field error；“class 已知但 Provider/Adapter 暂不可执行”
 属于后续 compile/runtime reason，不能由 canonicalizer 把 policy 删除或改成其他 class。
 
-## 8. D6：authoring 与 activity fence
+## 8. D6：authoring 与 Pod-derived anchor activity
 
-### 8.1 选择 PodGroup status CAS 作为竞态闸门
+### 8.1 Alpha 选择：不新增 ActivityFence
 
-新增一个小型、可观察的 status 结构；它不是完整 evidence store：
+Alpha 不新增 `DeviceTopologyActivityStatus`，也不把 anchor 写入 PodGroup status。Group 是否已经建立 anchor，直接由已绑定成员
+Pod 的 NodeName 和 `xpu-assignment` annotation 判断；anchor 在 scheduler 的 `JobInfo/SubJobInfo` 中按需重建。
 
-```go
-// Contract draft only.
-type DeviceTopologyActivityStatus struct {
-    PolicyFingerprint string
-    SpecGeneration    int64
-    State             ActivityState // Quiescent, Reserving, Active, Reconciling
-    EvidenceRef       string
-    RecordRevision    string
-    SchedulerEpoch    string
-}
-```
+第一轮尚无已绑定成员时，anchor 只存在于本次 Session 的试算状态。第一轮 Bind 成功后，后续 Session 从 Pod cache 恢复 anchor。
+这是与现有 HyperNode recovery 相同的生命周期，不要求在 Bind 前增加一条 PodGroup 持久化写入。
 
-final reserve 前固定执行：
+Alpha 的 policy mutation 规则为：
 
-```text
-re-read PodGroup UID/RV/generation/policy fingerprint
-  -> UpdateStatus(ActivityState=Reserving) with resourceVersion CAS
-  -> re-read accepted status and verify the same fingerprint/generation
-  -> final ledger hold / Adapter Reserve
-```
+- 没有已绑定成员时，可以按现有 webhook/controller 规则更新 policy；
+- 已存在有效的 Group anchor 时，拒绝 `resource/scope/domainClass/applyTo/selector` 等 semantic mutation；
+- 只允许同一 policy 的无语义变化更新；
+- 由单 active scheduler leader 读取和更新缓存，普通 Kubernetes `resourceVersion` 只用于已有对象更新冲突；
+- policy 或成员信息读取不一致时，丢弃本轮 plan 并重新读取，不创建第二个 anchor。
 
-因此 policy update 与 first reserve 竞争时只能有一个先成功：
-
-- spec update 先成功：旧 RV 的 status fence 冲突，scheduler 放弃旧 plan 并重新编译；
-- status fence 先成功：spec update 的旧 RV 冲突；客户端重试时 webhook 看到非 Quiescent，拒绝 semantic mutation；
-- status/evidence 不可读或写结果未知：按 Active/Unknown 处理，不允许更新或新 owner。
-
-删除 policy 也是 semantic mutation。只有 `Quiescent`、无 evidence/anchor/ref、无 bind handoff 且 canonical fingerprint 变化检查通过时允许。
-fingerprint 相同的 no-op 更新可以通过，但仍必须保持 owner/annotation authority 一致。
+如果后续需要在 Pod 删除后恢复外部 reservation，再单独增加 durable evidence 和 fencing 合同；这不属于 Alpha。
 
 ## 9. D7：激活、reload 和 action 支持矩阵
 
@@ -315,34 +333,35 @@ accepted schedulerNames（排序）
 xpu-topology-aware plugin arguments/callback enablement
 Provider identity + resource owner identity/capabilities
 fixed catalog readiness
-EvidenceStore/Adapter identity
+assignment annotation contract and Provider readiness
 ```
 
 scheduler、admission 和 controller 的 accepted schedulerNames 必须一致。任一目标 Pod 的 `spec.schedulerName` 不在这份集合，xPU authoring
 不应被该 Volcano 实例接管；在集合内但 gate/plugin/config 不完整时，带 policy 的对象 fail closed。
 
-首次非法配置不进入 Ready；热更新先构造并恢复新 manager，完整验证后原子替换。旧配置在 reservation/evidence/anchor/
-reconciliation 未清空前继续承担管理责任。feature gate 是进程启动参数，不热更；关闭需要 drain 后统一重启 scheduler/admission。
+首次非法配置不进入 Ready。Alpha 不切换或恢复独立 reservation/evidence manager；已绑定 Pod 的 annotation 和 NodeName 是可重新读取的事实。
+feature gate 是进程启动参数，不热更；关闭需要 drain 后统一重启 scheduler/admission。
 
 ### 9.2 action 支持矩阵
 
-| action/入口 | 当前源码行为 | soft Alpha | hard Exact Alpha |
+| action/入口 | 当前源码行为 | soft Alpha | hard Topology Alpha |
 | --- | --- | --- | --- |
-| `allocate` normal branch | winning `Statement.Commit()` | 允许；Predicate 后评分，不建立 owner | 唯一允许创建新 exact owner 的入口；必须走 `CommitExact` |
-| `allocate` hard-network/SubGroup branch | trial/Save/Recover 后 `Statement.Commit()` | 允许，保持 network gradient owner | 允许，但 AdmissionSet/checkpoint 必须覆盖 merged/recovered winning Statement |
-| nomination fast path | 回到 allocate 的 Statement | 允许 | 允许；最终 placement 必须完整 revalidate，不能沿用旧 device plan |
-| `backfill` | 直接 `Session.Allocate()` 并可能 dispatch | 允许 preference | **阻断带 hard policy 的 Task**；首个 Alpha 不创建 exact owner |
-| `preempt/reclaim` | Statement 主要提交 Evict/Pipeline | 允许现有 victim 选择 | 可请求 eviction/pipeline；不得提前 reserve victim Device；后续 allocate 重新完整计划 |
+| `allocate` normal branch | winning `Statement.Commit()` | 允许；Predicate 后评分 | 允许；在 BindContext 写入 assignment annotation，anchor 只保存在 Session 或由已绑定 Pod 恢复 |
+| `allocate` hard-network/SubGroup branch | trial/Save/Recover 后 `Statement.Commit()` | 允许，保持现有 network gradient | 允许；merged/recovered winning Statement 必须重新生成并校验 DeviceKeys |
+| nomination fast path | 回到 allocate 的 Statement | 允许 | 允许；最终 placement 必须重新校验，不能沿用失效的 DeviceKeys |
+| `backfill` | 直接 `Session.Allocate()` 并可能 dispatch | 允许 preference | **阻断无法写入 assignment annotation 或无法恢复 Group anchor 的 hard Task** |
+| `preempt/reclaim` | Statement 主要提交 Evict/Pipeline | 允许现有 victim 选择 | 可请求 eviction/pipeline；不提前建立 reservation；后续 allocate 重新完整计划 |
 | `gangpreempt/gangreclaim` | domain nomination + Evict/Pipeline Commit | 允许现有网络行为 | 同上；nomination 只是 hint，不是 xPU anchor/assignment |
-| `shuffle` | 直接 `Session.Evict()` | 允许 | 只触发 ReleaseRequested；Released 前设备不回 Free |
-| bind worker | 单项队列、逐 Pod PreBind/Bind | 普通路径不变 | 只接受完整 prepared batch；之后 Kubernetes Bind 仍逐 Pod |
+| `shuffle` | 直接 `Session.Evict()` | 允许 | 只改变 Pod 生命周期；Pod 删除后由现有 cache/provider 反映可用性，不把 eviction 当成精确 Released |
+| bind worker | 单项队列、逐 Pod PreBind/Bind | 普通路径不变 | 复用现有逐 Pod PreBind/Bind；每个成功绑定 Pod 必须保留 assignment annotation |
 
-core final guard 必须独立于 plugin callback：任何 hard policy 的新 Allocate 没有 exact prepared batch 时拒绝 dispatch。这样即使新 action
-未来直接调用 `Session.Allocate()`，也不能绕过合同。
+core final guard 必须独立于 plugin callback：任何 hard policy 的新 Allocate 如果无法生成并写入可校验的 assignment annotation，拒绝
+dispatch。这样即使新 action 未来直接调用 `Session.Allocate()`，也不能绕过 Alpha 的身份和 anchor 合同。
 
-## 10. D8：多个 Group、SubGroup 和 resource 的所有权
+## 10. D8：多个 Group、SubGroup 和 resource 的组合
 
-一个 winning Statement 只有一个 `ExactCommitContext`。它可以包含多个逻辑 Group 和多个 resource owner：
+Alpha 一个 winning Statement 仍只产生一份最终 placement context，可以包含多个逻辑 Group 和 resource；但不创建跨 backend 的
+全局 owner。下面的 `ExactCommitContext` 仅是后续 Exact 的扩展草案：
 
 ```go
 // Contract draft only.
@@ -360,41 +379,39 @@ type ExactCommitContext struct {
 1. Job-level 和 SubGroup-level policy 先按每个 Task 展开，再求约束交集；同一 Task 只有一个 Node 和一组最终 DeviceKeys；
 2. 一个 Task 可被多个 GroupRef 约束，但不能产生多份互相覆盖的 placement；
 3. `Group + Node`、`Group + Fabric` 各自为所属稳定 Group 保存 class-bearing selection；Pod policy 不建立共享 anchor；
-4. 同 resource 的所有 policy 由一个 exact owner 产生一份 assignment，不能由两个 Adapter 重复 reserve；
-5. 不同 resource owner 按稳定 key 顺序 Reserve/Prepare；任一失败按逆序 Compensate，全部成功后才进入 evidence/batch；
-6. Statement 中任一 Group 失败时整个 exact commit 不接受 batch；普通 Task 不允许从同一 Statement 被拆出提前 Bind；
-7. `SaveOperations/RecoverOperations` 只复制可重建的 Task/Node 试算结果，GroupPlan/reservation 必须对 winning Statement 重新生成或显式转移。
+4. 同 resource 的每个 Pod 只产生一份 assignment annotation；Alpha 不建立跨 Adapter 的全局 reservation owner；
+5. 同一 Group 的已绑定成员必须得到一致的 Domain/Fabric anchor；缺失或冲突时 Group Pending；
+6. Statement 中的普通 Task/Node operation 仍由现有 Statement 管理；Alpha 不要求额外的 exact coordinator 或不可拆分 batch；
+7. `SaveOperations/RecoverOperations` 只复制可重建的 Task/Node 试算结果，Group anchor 在新 Session 中从已绑定 Pod 重新推导。
 
-这会使多 resource 具备“协调提交 + 可审计补偿”，但不声称跨 backend 或 Kubernetes 多 Pod Bind 是分布式原子事务。
+这保留了 Group 拓扑语义，但不把 Alpha 扩展成跨 backend 的分布式事务。
 
-## 11. 固定提交顺序和故障责任
+## 11. Alpha 提交边界与后续 Exact 故障责任
 
 ```text
-checkpoint allocation-attempt side state
-  -> derive complete AdmissionSet from winning Statement
-  -> compile all Job/SubGroup policies and complete group plan
-  -> write ActivityFence(Reserving) with PodGroup RV CAS
-  -> final ledger all-or-nothing hold
-  -> Adapter Reserve all resource owners
-  -> Adapter Prepare all assignments
-  -> EvidenceStore CAS write group anchor/assignment
-  -> BatchBinder PrepareBatch (all PreBind, zero Kubernetes Bind)
-  -> Adapter Commit
-  -> BatchBinder AcceptBatch (single owner-transfer point)
-  -> individual Kubernetes Bind
+Alpha:
+  -> compile Group/Pod topology policy in the current Session
+  -> Statement.Allocate selects Node and canonical DeviceKeys
+  -> attach scheduler-owned volcano.sh/xpu-assignment to each BindContext
+  -> existing per-Pod PreBind/Bind
+  -> next Session derives Group anchor from bound Pods
+
+Post-Alpha Exact:
+  -> complete AdmissionSet / coordinator / external reservation
+  -> durable evidence and complete-batch PreBind gate
+  -> cross-system commit, reconciliation and release
 ```
 
 | 失败点 | 必须动作 | 禁止推断 |
 | --- | --- | --- |
-| ActivityFence CAS 冲突 | 放弃旧 plan，恢复 checkpoint，重新读取 policy | 不得忽略冲突沿用旧 fingerprint |
-| final ledger hold 冲突 | all-or-nothing 零修改，恢复 Statement/checkpoint | 不得保留部分 DeviceKeys |
-| 第 N 个 Adapter Reserve/Prepare 失败 | 逆序 Compensate 已成功 owner；不调用 PreBind/Bind | nil/error 缺失不得视为 Released |
-| evidence 写明确失败 | Compensate Adapter、释放或隔离 ledger、恢复 | 不得在无 durable record 时继续 Bind |
-| evidence 写结果未知 | 查询稳定 record key；进入 ReconcilePending | 不得再创建第二个 record/owner |
-| 第 N 个 PreBind 失败 | rollback 全部已执行 PreBinder，再 Compensate Adapter | 成功的前 N-1 项不得入 bind queue |
-| Adapter Commit 成功、AcceptBatch 失败/未知 | 保留 owner/evidence并 reconcile batch 接收结果 | 不得当作未分配或直接 Free |
-| AcceptBatch 后第 N 个 Kubernetes Bind 失败 | 成功项观察 Allocated，失败项补偿/reconcile | 不得伪造整组 Kubernetes rollback |
-| Release/Reconcile timeout、空或缺项 | 保持 ReconcilePending/Unknown | 不得因 Pod NotFound 或列表缺项 Free |
+| assignment annotation 缺失或格式非法 | 不建立该 Pod/Group 的恢复 anchor；hard policy 保持 Pending | 不得从 PodGroup 摘要或 GPU index 猜测 DeviceKey |
+| 已绑定成员的 Node/DeviceKeys 无法映射到当前 topology | Group 保持 Pending，等待事实恢复或人工处理 | 不得选择第二个 Domain/Fabric 规避冲突 |
+| 同一 Group 的已绑定成员 anchor 冲突 | Group 保持 Pending，并记录可重建诊断信息 | 不得覆盖旧成员或把冲突当成新 Group |
+| Node 被同名替换且 NodeUID 不一致 | 拒绝恢复旧 assignment，重新走调度 | 不得仅凭 NodeName 或 GPU index 复用旧 anchor |
+| 普通 Statement/单 Pod Bind 失败 | 沿用现有 scheduler/cache 错误路径；未绑定成员不构成 anchor | 不得宣称 Kubernetes 多 Pod Bind 原子回滚 |
+
+后续 Exact 的 ledger、Adapter Reserve/Prepare/Commit、durable evidence、完整 batch 和 release/reconcile 失败矩阵仍可沿用
+独立设计，但它们不属于本 Alpha 的提交顺序，也不是 XPU-00 的放行条件。
 
 ## 12. 源码触点与所有权
 
@@ -405,10 +422,10 @@ checkpoint allocation-attempt side state
 | authoring/activity | `pkg/controllers/podgroup/pg_controller_handler.go`、job controller、admission、PodGroup status | XPU-04/A |
 | Provider/cache/snapshot | `pkg/scheduler/cache/{cache,event_handlers}.go`、`api/cluster_info.go`、`framework/session.go` | XPU-05/06/S |
 | Group planning | `framework/session_plugins.go`、`actions/allocate/allocate.go`、Job/SubJob | XPU-08/S |
-| checkpoint/Statement owner | `actions/allocate/{allocate,recorder}.go`、`framework/statement.go` | XPU-09/S |
-| ledger/Adapter/evidence | 新 topology manager/adapter 包；PodGroup status reference | XPU-10/11/S+R |
-| complete batch | `pkg/scheduler/cache/{interface,cache}.go`、PreBinder registry | XPU-12/S |
-| bypass/release/recovery | allocate/backfill/preempt/reclaim/gang*/shuffle、Pod/Node events | XPU-13/14/S+R |
+| Session-local Group plan/Statement | `actions/allocate/{allocate,recorder}.go`、`framework/statement.go` | XPU-09/S |
+| Pod-derived anchor/assignment annotation | `pkg/scheduler/framework/session.go`、`pkg/scheduler/cache/event_handlers.go`、Pod Bind annotation path | XPU-11/S |
+| future complete batch | `pkg/scheduler/cache/{interface,cache}.go`、PreBinder registry | 后续 Exact |
+| hard-policy bypass/Pod recovery | allocate/backfill/preempt/reclaim/gang*/shuffle、Pod/Node events | XPU-13/14/S |
 
 当前事实不能与提议混写：`Statement.Commit()` 仍无 error；`backfill` 直接调用 `Session.Allocate()`；`AddBindTask()` 仍单项入队；
 `executePreBinds()` 会保留成功成员。本文没有改变这些实现。
@@ -431,8 +448,9 @@ allocate.Action.Execute
      -> executePreBinds -> Bind
 ```
 
-XPU-09 的 checkpoint 和 complete AdmissionSet 必须放在 `allocateResourcesForQueues` 选出 winning Statement 之后、现有 `Commit()` 之前；
-不能放在单 Task `allocateResourcesForTask` 内，否则看不到完整 Group、多 SubGroup 和 Recover 后的最终 operations。
+Alpha 不增加独立 checkpoint、complete AdmissionSet 或 coordinator。Group plan 在 `allocateResourcesForQueues` 选出 winning Statement
+后随现有 Statement 提交；不能在单 Task 试算结束时提前宣布 Group anchor，因为此时还看不到完整 Group、多 SubGroup 和 Recover 后的最终
+operations。
 
 当前 backfill 是独立旁路：
 
@@ -445,11 +463,11 @@ backfill.Action.Execute
 ```
 
 因此仅给 `Statement` 增加 hook 不能保护 backfill。XPU-02/13 的 core guard 必须在 `Session.Allocate/dispatch` 或更靠近 cache batch
-入口再次识别 hard policy；首个 Alpha 在调用 `Session.Allocate` 前返回 `XPUTopologyActionNotSupported`。
+入口再次识别 hard policy；如果该入口无法产出并保留 assignment annotation，就返回 `XPUTopologyActionNotSupported`。
 
 preempt/reclaim/gangpreempt/gangreclaim 的 Statement 主要产生 Evict/Pipeline operations；shuffle 直接 `Session.Evict()`。这些路径只改变
-资源未来可用性，不得把 Pod eviction 成功、`FutureIdle` 或 Pipeline 当成 Device `Released`。XPU-14 在 cache Pod event 与 Adapter
-reconciliation 汇合处完成最终 Free 转移。
+资源未来可用性。Alpha 不从 eviction、`FutureIdle` 或 Pipeline 推断精确 Device Released；Pod 删除和 provider/cache 的正常更新负责
+反映下一轮可用资源，XPU-14 只检查 anchor 恢复与旁路行为。
 
 ## 13. Fixture 规范与可追踪验收
 
@@ -464,20 +482,20 @@ reconciliation 汇合处完成最终 Free 转移。
 | `canonical-equivalent-order-defaults`、`legacy-tier-rejected`、`unknown-class-authoring-error` | XPU-03/04 |
 | `node-domain-fragmented-6-plus-2`、四种 `applyTo × scope`、`node-and-fabric-and` | XPU-08 |
 | `statement-multiple-subgroups-resources`、`backfill-hard-bypass-blocked` | XPU-09/13 |
-| `activity-fence-wins`、`spec-update-wins` | XPU-04/11/13 |
-| `prebind-member-n-fails-zero-bind` | XPU-12/13 |
-| `release-missing-is-unknown`、`old-epoch-rejected` | XPU-10/14/15 |
-| `nvidia-nvml-mock-selected-uuid-idempotent` | XPU-01/10/15 Mock conformance |
-| `nvidia-real-runtime-id-gate` | XPU-15/16 真实硬件 M4 gate |
+| `bound-pod-anchor-recovery`、`xpu-assignment-annotation-persisted` | XPU-11/13 |
+| `xpu-assignment-missing-pending`、`xpu-assignment-conflict-pending` | XPU-11/13 |
+| `xpu-node-replacement-rejected` | XPU-11/14 |
+| `nvidia-nvml-mock-selected-uuid-idempotent` | XPU-01/11 Mock conformance |
+| `nvidia-real-runtime-id-gate` | XPU-01/15 真实硬件 identity gate |
 
 ## 14. 评审出口与剩余阻塞
 
 XPU-00 可以在以下条件满足后从“实现基线草案”转为“已冻结”：
 
-- API reviewer 接受 D1/D5/D6 的 ConfigMap、schema 和 status fence 形状；
-- scheduler/framework reviewer 接受 D3 的单 coordinator、error-returning exact commit 与 complete batch 边界；
-- runtime reviewer 接受 D2 evidence contract，并确认 XPU-01 的 NVIDIA Adapter、nvml-mock harness 与真实硬件补验环境；
-- allocate/bind/release 责任人逐项签核 action 矩阵和失败顺序；
+- API reviewer 接受 D1/D5/D6 的 ConfigMap、schema 和 policy mutation 规则；
+- scheduler/framework reviewer 接受 D2 的 Pod-derived anchor、assignment annotation 与单 leader 边界，并确认 Alpha 不新增事务层；
+- runtime reviewer 接受 D4 的 assignment identity contract，并确认 XPU-01 的 NVIDIA Provider、nvml-mock harness 与真实硬件补验环境；
+- allocate/bind/release 责任人逐项签核 action 矩阵、Pod annotation 持久路径和旁路行为；
 - 所有 `FrozenForAlpha` 决策均有 owner，所有 `ProbePending` 决策均有对应 XPU-01 证据链接。
 
 以下不阻塞 XPU-00/XPU-01：multiple acceptable classes、真实 Fabric 发布、topology-aware victim selection、DRA、MIG/vGPU、
