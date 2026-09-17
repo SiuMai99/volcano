@@ -32,9 +32,8 @@ V4 Alpha 使用已绑定 Pod 的 NodeName 与 assignment annotation 恢复 ancho
 ### 1.2 一条主路径，而不是平行调度器
 
 ~~~text
-VCJob typed field / direct PodGroup spec / Pod annotations
-  -> controller canonicalization
-  -> PodGroup.spec.deviceTopology（scheduler 唯一策略真源）
+direct PodGroup.spec.deviceTopology（Alpha canonical policy source）
+  -> schema/canonical validation
   -> feature gate + xpu-topology-aware plugin activation validation
   -> SchedulerCache.Snapshot（ClusterInfo + immutable DeviceTopologySnapshot）
   -> existing HyperNode / Predicate / Queue / Gang candidate path
@@ -48,7 +47,7 @@ VCJob typed field / direct PodGroup spec / Pod annotations
 ~~~
 
 V4 不建立第二套 Job、SubGroup、readiness 或调度循环。`TopologyGroup`、`AdmissionSet` 和
-Pod-derived group anchor 是附着于现有 Job/SubJob/Statement 的 Session-local 内部语义，不是新的 CRD；PodGroup 摘要也不是唯一事实源。
+Pod-derived group anchor 是附着于现有 Job/SubJob/Statement 的 Session-local 内部语义，不是新的 CRD；恢复只扫描已绑定成员 Pod。
 
 ### 1.3 两级能力，禁止混写保证
 
@@ -119,7 +118,7 @@ Advisory MVP 与 Pod-derived Topology Alpha 都只有在 feature gate 和 plugin
 | JobInfo/SubJobInfo | workload/group 上下文和 Task membership | Provider payload 与全局 Device owner |
 | Statement | 本轮 Task/Node speculative mutation 的 owner | Provider 解析与硬件事实 |
 | SchedulerCache | 集群 live state、一次 Session snapshot、bind handoff | 厂商 runtime 分配协议 |
-| Provider/Device Plugin | 选中 ID 的消费/确认与 Pod assignment annotation | Domain/Fabric 规划和 scheduler 调度状态 |
+| Provider/Device Plugin | source facts 的摄取/规范化、能力声明，以及对 scheduler 已选 DeviceKeys 的消费或确认 | 选择 DeviceKeys、Domain/Fabric 规划和 scheduler 调度状态 |
 
 ### 2.3 本文提议的新增所有权
 
@@ -139,14 +138,14 @@ flowchart LR
 
 关键所有权如下：
 
-- Provider 只拥有 source ingestion 和 validation；
+- Provider 只拥有 source ingestion、normalization、capability 和 selected-key validation；最终 DeviceKeys 由 scheduler planner 选择；
 - 管理员 `ResourceTopologyDescriptor` 拥有 workload 可见的 DomainClass catalog；Provider 只能引用并规范化到该 catalog；
 - topology live cache 拥有 canonical facts、descriptor view、readiness 和 indexes；本 Alpha 不拥有外部 allocation state；
 - `ClusterInfo.DeviceTopology` 是 Session 的不可变只读视图；
 - xPU plugin 做 policy compile、filter、score 和 side-effect-free plan；Session-local anchor/plan 只服务本轮调度；
 - Statement 仍拥有普通 Task/Node mutation，并把最终 DeviceKeys 转换为每个 Pod 的 assignment annotation；
-- 已绑定 Pod 是跨 Session anchor 的可恢复输入；可选 PodGroup 摘要只是快速索引，不是 allocation truth；
-- Provider/Device Plugin 负责消费或确认 assignment；外部 allocation lifecycle 不属于本需求。
+- 已绑定 Pod 是跨 Session anchor 的唯一可恢复输入；不新增 PodGroup 摘要状态；
+- Provider/Device Plugin 负责消费或确认 scheduler-owned assignment；外部 allocation lifecycle 不属于本需求。
 
 ### 2.4 后续研究
 
@@ -187,40 +186,34 @@ var defaultVolcanoFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec
 | Scheduler gate | `xpu-topology-aware` plugin | 结果 |
 | --- | --- | --- |
 | 关闭 | 未配置 | 功能关闭；不启动 Provider/topology manager，不改变普通 workload 调度行为 |
-| 关闭 | 已配置 | 配置非法；首次启动失败，热更新拒绝并保留上一份已接受配置 |
+| 关闭 | 已配置 | 配置非法；首次启动 fail closed；热更新行为属于后续发布流程 |
 | 开启 | 未配置 | 配置非法；scheduler 不进入 Ready，不能让 xPU policy 落入普通调度路径 |
-| 开启 | 已配置 | 进入 xPU activation validation；Provider、catalog、assignment contract 和参数校验通过后才 Ready |
+| 开启 | 已配置 | 进入 xPU activation path；`New` 按现有 plugin 规则解析参数，无法使用时对相关 xPU policy fail closed |
 
 admission gate 关闭时，webhook 拒绝新建非空 policy，也拒绝给已有对象新增或修改 policy；只允许删除 policy。admission gate
-开启也不是单独的 authoring 开关：webhook 必须读取与目标 schedulerName 对应的同一 scheduler ConfigMap（或由它原子派生的
-read-only activation config），并复用相同的静态 validator。plugin 缺失、参数非法、config 不可读或 activation digest 不一致时，
-非空 policy 仍被拒绝；webhook 不检查动态 Device 可用量、单 Node freshness 或 Provider 实时健康。
+开启也不是单独的 authoring 开关：webhook 只执行 schema/canonical policy 校验，不读取 scheduler 运行时配置、catalog readiness 或
+Provider 实时健康。scheduler plugin 缺失、catalog 不可读或 Provider contract 不完整时，scheduler core 对非空 policy fail closed。
 scheduler core 还必须有一个不依赖 xPU plugin callback 的 typed-policy guard：gate/plugin 未形成有效组合时，任何已持久化的非空
 `PodGroup.spec.deviceTopology` 都不可按普通 Job 调度。这是升级、回滚和误配置的最后 fail-closed 边界，不是第二个调度实现。
-controller canonicalization 必须始终保留已持久化 intent 以支持 drain/删除，不能因为本进程 gate 关闭就把 policy 清空后生成一个
+controller/schema path 必须始终保留已持久化 intent，不能因为本进程 gate 关闭就把 policy 清空后生成一个
 “无 topology 要求”的 PodGroup。
 
 ~~~mermaid
 flowchart LR
     FG[Feature gate] --> V[Activation validator]
     PC[Scheduler tiers plugin entry] --> V
-    AR[Plugin arguments] --> V
-    V -->|invalid| NR[Startup not Ready or reject reload]
+    V -->|invalid| NR[Startup not Ready]
     V -->|valid| TM[Process-scoped topology manager]
     TM --> SV[Immutable Session topology view]
     SV --> PL[xpu-topology-aware callbacks]
     WG[Admission gate] --> WH[Webhook policy validation]
-    PC -->|shared static activation config| WH
     WH --> PG[Canonical PodGroup policy]
     PG --> PL
 ~~~
 
 feature gate 是进程启动参数，不能通过 scheduler ConfigMap 热更新。scheduler plugin 配置虽然可随配置文件热更新，
-但移除 plugin、切换 Provider 或改变 identity namespace 都是 drain 操作：仍有已绑定 topology Pod 或正在进行的 semantic policy
-mutation 时必须拒绝新配置并继续使用上一份配置。Alpha 不检查或恢复外部 allocation 状态。
-禁用 gate 前必须先处理受保护的 topology Pod，再统一重启 scheduler 与 admission；各 scheduler replica 必须使用相同 gate、plugin
-参数和配置 digest。规范化后的 activation digest 至少覆盖 gate 状态、plugin 参数、固定 catalog 是否可读和 Provider identity，
-并进入 immutable topology view。
+但 Alpha 不冻结跨进程 reload、统一 drain 或 activation digest。移除 plugin、切换 Provider 或改变 identity namespace 时，发布流程
+必须先保证非空 xPU policy 不会落入普通调度；具体升级/关闭演练属于后续发布验收。Alpha 不检查或恢复外部 allocation 状态。
 
 #### 2.5.2 scheduler 与 Helm 配置
 
@@ -249,10 +242,6 @@ tiers:
     arguments:
       xpu-topology.provider: annotation
       xpu-topology.provider-max-age: 2m
-      xpu-topology.max-search-states: 10000
-      xpu-topology.max-candidate-domains: 64
-      xpu-topology.max-planning-attempts: 3
-      xpu-topology.planning-timeout: 50ms
 ~~~
 
 Alpha 只使用 Provider 的 observation/assignment-confirmation：`soft` 可打分，hard 只有在 Provider 能消费或确认
@@ -264,15 +253,10 @@ scheduler-selected DeviceKey 且能保留 Pod assignment 时才可执行。Alpha
 | 参数 | Alpha 默认/要求 | 消费者与语义 |
 | --- | --- | --- |
 | `xpu-topology.provider` | 必填；首期 `annotation`，`mock` 仅测试 | process-scoped topology cache；选择事实输入和 assignment confirmer，不选择 allocation owner |
-| `xpu-topology.provider-max-age` | `2m`，必须大于 0 | Provider/cache；超过 freshness 后 hard fail closed |
-| `xpu-topology.max-search-states` | `10000`，必须大于 0 | group planner；限制 bounded backtracking |
-| `xpu-topology.max-candidate-domains` | `64`，必须大于 0 | group planner；限制每个 planning unit 展开的 Domain 数 |
-| `xpu-topology.max-planning-attempts` | `3`，必须大于 0 | allocate integration；限制冲突后的完整 replan 次数 |
-| `xpu-topology.planning-timeout` | `50ms`，必须大于 0 | group planner；超时返回 `XPUTopologyPlanningBudgetExceeded` |
+| freshness/budget | 不冻结为 Public plugin 参数 | Provider freshness 和 planner 的有限预算由实现阶段根据对象大小与调度循环确定；超出预算只能保持 Pending |
 
-这些是 scheduler plugin/runtime 参数，不承载 workload policy，也不承载具体 Device/Domain/Fabric ID。`domainClass` 只引用
-第 5.1 节定义的 Alpha 固定 catalog；scheduler、webhook、controller 和 Provider 必须读取同一份 class 定义，不能在
-plugin arguments 中复制另一套 class 解释。
+这些是最小 scheduler plugin/runtime 入口，不承载 workload policy，也不承载具体 Device/Domain/Fabric ID。`domainClass` 只引用
+Alpha catalog；catalog 的具体交付和非 scheduler 组件读取方式不作为跨进程协议冻结。
 
 Helm 安装或升级需要同时传 scheduler/admission gate，并用完整 scheduler 配置覆盖文件：
 
@@ -297,7 +281,6 @@ helm upgrade --install volcano ./installer/helm/chart/volcano \
 const PluginName = "xpu-topology-aware"
 
 func New(arguments framework.Arguments) framework.Plugin
-func ValidatePluginOption(option conf.PluginOption) error
 
 func (p *xpuTopologyAwarePlugin) Name() string
 func (p *xpuTopologyAwarePlugin) OnSessionOpen(ssn *framework.Session)
@@ -305,26 +288,23 @@ func (p *xpuTopologyAwarePlugin) OnSessionClose(ssn *framework.Session)
 
 // pkg/scheduler/plugins/factory.go
 framework.RegisterPluginBuilder(xputopologyaware.PluginName, xputopologyaware.New)
-framework.RegisterPluginConfigValidator(
-    xputopologyaware.PluginName,
-    xputopologyaware.ValidatePluginOption,
-) // proposed
 ~~~
 
 `Name/OnSessionOpen/OnSessionClose` 是当前 `framework.Plugin` 必须实现的方法，`New(Arguments) Plugin` 是当前 builder 形状。
-`RegisterPluginConfigValidator`/`ValidatePluginOption` 是本文提议的新启动校验能力：当前 `New` 不能返回 error，而且每个 Session 都会
-重新构造 plugin，因此不能把配置合法性、gate/plugin 组合或 drain 校验藏在 `OnSessionOpen`。首次启动在开放任何 Session 前校验；
-热更新先校验完整候选配置，成功后才原子替换，失败时保留上一份配置。
+`xpu-topology-aware` 的参数处理沿用现有 plugin：`New` 先建立默认配置，再用 `Arguments.GetString/GetBool/GetInt/GetFloat64`
+解析参数；类型错误、格式错误或超出范围时记录 warning 并保留默认值，无法安全运行的 Provider 配置则标记为不可用，由 xPU policy
+路径 fail closed。`enablePredicate/enableNodeOrder` 仍由现有 Session 根据 `PluginOption` 控制回调是否执行，不新增 framework validator。
+feature gate 与 plugin 是否形成有效 activation 组合属于 scheduler/policy guard，不由 `New` 单独判断。
 
 长生命周期 Provider、topology cache 和 immutable snapshot publisher 由 process-scoped topology manager 拥有，不能由每个 Session 的
-`New` 重复创建。Alpha 不拥有外部 allocation 状态或 recovery worker。scheduler 配置加载器从同一份
-plugin arguments 构造并校验 manager config；
+`New` 重复创建。Alpha 不拥有外部 allocation 状态或 recovery worker。scheduler 配置加载器与 plugin `New` 使用同一份
+plugin arguments 构造 manager config；
 `OnSessionOpen` 只能取得 `ClusterInfo` 已配对的一份 immutable topology view，不能 type-assert cache 后做第二次 snapshot。
 
 #### 2.5.4 Plugin 必须注册/实现的调度函数
 
-`OnSessionOpen` 的最小形状如下；JobValid、Predicate、BatchNodeOrder 与 EventHandler 是当前 framework 可复用能力，
-GroupTopologyPlan 是 Alpha 需要新增并评审的最小组规划合同：
+Alpha 只复用现有 JobValid、Predicate、BatchNodeOrder 与 EventHandler。完整 Group plan 在 `allocate` 的 xPU 私有集成点执行，
+暂不冻结通用 framework 的组规划注册 API；未来出现第二个消费者时，再以真实调用链为依据抽象公共边界：
 
 ~~~go
 func (p *xpuTopologyAwarePlugin) OnSessionOpen(ssn *framework.Session) {
@@ -334,8 +314,6 @@ func (p *xpuTopologyAwarePlugin) OnSessionOpen(ssn *framework.Session) {
     ssn.AddPredicateFn(p.Name(), p.predicate)
     ssn.AddBatchNodeOrderFn(p.Name(), p.batchNodeOrder)
 
-    ssn.AddGroupTopologyPlanFn(p.Name(), p.planGroup)       // proposed Alpha hook
-
     ssn.AddEventHandler(&framework.EventHandler{
         AllocateFunc:   p.onAllocate,
         DeallocateFunc: p.onDeallocate,
@@ -343,38 +321,19 @@ func (p *xpuTopologyAwarePlugin) OnSessionOpen(ssn *framework.Session) {
 }
 ~~~
 
-| 函数/回调 | 是否已有 framework 注册点 | 必须承担的责任 | 明确不能做 |
+| 函数/回调 | Alpha 落点 | 必须承担的责任 | 明确不能做 |
 | --- | --- | --- | --- |
-| `ValidatePluginOption` | 否，需新增 config validator | 严格解析参数，要求 `enablePredicate/enableNodeOrder=true`，校验 gate/plugin 组合所需的静态配置；unknown key/value 返回 error | 启动 Provider、访问 live allocation state、依赖某次 Session |
+| `New` | 是，当前 plugin builder | 建立默认配置并解析 provider 等静态参数；类型/格式/范围错误告警并回退或标记不可用，不启动 Provider、不访问 live allocation state | 把 gate/plugin 组合校验或动态 topology readiness 藏在参数解析中 |
 | `jobValid` | 是，`AddJobValidFn` | 编译 canonical PodGroup policy，校验 catalog/class、请求形状和 hard enforceability，返回结构化 reason | 复制 gang readiness 或把 hard 改成 soft |
 | `predicate` | 是，`AddPredicateFn` | 在普通 Predicate 候选上复核 NodeUID、freshness、health、Domain/Fabric membership 与 hard topology feasibility | 只看 Node aggregate xPU 数量，或重新引入已被普通 Predicate 排除的 Node |
 | `batchNodeOrder` | 是，`AddBatchNodeOrderFn` | 只对 `soft` policy 的 Domain/Fabric preference 和 internal Compact 产生确定性附加分；共享同一 immutable view | 用 score 实现 hard filter，或覆盖其他 plugin 分数 |
-| `planGroup` | 否，需新增 `AddGroupTopologyPlanFn` | 对当前 AdmissionSet 做 side-effect-free Node/Domain/Device plan，并遵守已恢复 anchor 和 search budget | 修改 Statement/NodeInfo live state，或产生外部副作用 |
+| `groupPlan` | `allocate` 内的 xPU 私有 planner 调用 | 对 winning Statement 可见的完整成员做 side-effect-free Node/Domain/Device plan，并遵守已恢复 anchor | 新增通用 framework callback、修改 live state 或产生外部副作用 |
 | `onAllocate/onDeallocate` | 是，`AddEventHandler` | 维护 Session-local overlay，使同一 Session 后续 plan 看见 tentative Allocate/Deallocate | 把普通 Allocate event 当成已绑定 Pod 的 assignment evidence |
 | `OnSessionClose` | 是，`framework.Plugin` | 丢弃 Session-local compiled policy、score cache、anchor 和 overlay | 停止 process Provider，或修改外部 allocation owner |
 
-`planGroup` 的建议签名为：
-
-~~~go
-type GroupTopologyPlanFn func(
-    context.Context,
-    *GroupTopologyPlanContext,
-) (*TopologyPlacementPlan, error)
-
-type GroupTopologyPlanContext struct {
-    Group             GroupRef
-    AdmissionSet      []*api.TaskInfo
-    CandidateNodes    map[api.TaskID][]*api.NodeInfo
-    AssignedNodes     map[api.TaskID]*api.NodeInfo // finalization 时固定
-    NodeResourceState map[string]*api.NodeInfo     // planner-owned clones
-    Anchor            *PodDerivedGroupAnchor
-    Topology           *DeviceTopologySnapshot
-}
-~~~
-
-`CandidateNodes` 只能来自 Queue/NodeShard/HyperNode/普通 Predicate 已产生的候选交集；`AssignedNodes` 非空时，final plan 必须使用这些
-固定 Node。返回 plan 必须覆盖整个 AdmissionSet，否则返回 error 且不进入 Bind。allocate action 负责选择调用时机，
-plugin 不接管 task iterator、gang readiness 或 `Statement` operation ownership。
+`allocate` 私有 planner 的输入只包括：本轮完整的待调度成员、普通候选交集、已绑定 Pod 推导的 anchor、paired immutable snapshot
+和 winning Statement 的 final Node placement。规划结果必须覆盖本轮成员，否则不进入 Bind；planner 不接管 task iterator、gang readiness
+或 `Statement` operation ownership。它必须是纯函数式的，具体 context 结构、索引和有限预算留在实现阶段，不作为 framework API。
 
 当前 `BindContextHandler.SetupBindContextExtension` 是 per-Pod、无 error 返回的附加接口。Alpha 使用它或等价的 BindContext
 扩展把 scheduler-owned assignment annotation 带入 Pod Bind；它不负责跨 Pod rollback，也不声称多 Pod Bind 原子性。
@@ -431,8 +390,8 @@ type DeviceTopologySpec struct {
 }
 ~~~
 
-建议在 `PodGroupSpec` 和 `SubGroupPolicySpec` 增加 `DeviceTopology *DeviceTopologySpec`；VCJob 可增加 ergonomic
-字段，但 controller 必须把它转换到生成的 PodGroup/SubGroup canonical spec。scheduler 不直接读取 VCJob 或 Pod Annotation。
+建议在 `PodGroupSpec` 和 `SubGroupPolicySpec` 增加 `DeviceTopology *DeviceTopologySpec`；VCJob、PodTemplate 等 ergonomic
+字段延期，后续若增加必须先转换到生成的 PodGroup/SubGroup canonical spec。scheduler 不直接读取这些 source。
 `hard/soft` 刻意与现有 `NetworkTopologyMode` 术语保持一致，不另造 `Required/Preferred` 的同义 API。
 
 默认和校验规则：
@@ -440,7 +399,7 @@ type DeviceTopologySpec struct {
 - `mode` 默认 `hard`；`applyTo` 默认 `Pod`；
 - `mode` 只接受 `hard/soft`；无效值必须拒绝，不能默认成 `hard`；
 - `scope` 只接受 `Node/Fabric`；`domainClass` 必填，并满足 API review 后冻结的 DNS-label 风格语法；
-- V4 Go/canonical schema 不暴露 `tier/tierName`；served OpenAPI 仅保留 reject-only legacy tombstone 字段并用 CEL 拒绝，
+- V4 Go/canonical schema 不暴露 `tier/tierName`；只有实际 served 过 V3 的 version 才保留 reject-only legacy tombstone 并用 CEL 拒绝，
   annotation 使用 strict decoding，不能 prune 后按默认 class 调度；
 - `scope=Fabric` 只匹配 Provider 明确发布的 Fabric；HyperNode 或 IB/RoCE 可达性不能隐式满足；
 - `domainClass` 必须解析到同一 `resourceName + scope` 的管理员 catalog；未知 class 对 hard/soft 都是 authoring error，已知但
@@ -547,17 +506,11 @@ Compact 是确定性的内部选择/soft preference，不是绕过 hard constrai
 
 Public API 同样不暴露：Device/Domain/Fabric ID、selected Node、Health、AllocationState、snapshot revision 或 Provider payload。
 
-### 3.3 Pod Annotation authoring contract
+### 3.3 Alpha canonical authoring contract
 
-本文提议一个 workload annotation：
-
-~~~text
-scheduling.volcano.sh/device-topology
-~~~
-
-其值是 versioned JSON，字段与 `DeviceTopologySpec` 一一对应。它只是 authoring 入口，不是 scheduler API，也不是
-运行时 assignment carrier。controller 解析后必须经过与 typed field 相同的 default、validation、stable sort 和
-canonical serialization，再写入 `PodGroup.spec.deviceTopology`。
+首个 Alpha 只冻结一个 canonical authoring 路径：用户直接提交 `PodGroup.spec.deviceTopology` typed field，scheduler 只读取这份
+canonical spec。VCJob/partition 字段、Deployment/ReplicaSet/StatefulSet PodTemplate annotation 和 bare-Pod ergonomic 入口延期，
+后续若加入必须先把输入转换为同一 typed field，并单独评审冲突与版本语义。
 
 ~~~json
 {
@@ -575,55 +528,34 @@ canonical serialization，再写入 `PodGroup.spec.deviceTopology`。
 }
 ~~~
 
-未知 `apiVersion`、未知字段、重复 JSON key、超过大小上限或非 canonical 类型必须拒绝，不能由宽松 JSON 解码静默丢弃。
+未知字段、重复 JSON key 或非 canonical 类型必须拒绝，不能由宽松 JSON 解码静默丢弃。对象大小和 policy 数量只设实现阶段的
+最小防护，不在 Alpha 合同中冻结具体数字。
 
 ~~~mermaid
 flowchart TD
-    Job["VCJob typed field"] --> JobCtl["Job controller"]
     Direct["Direct PodGroup typed spec"] --> Canonical["PodGroup.spec.deviceTopology"]
-    Pod["Pod or Pod template annotation"] --> PGCtl["PodGroup controller"]
-    JobCtl --> Canonical
-    PGCtl --> Canonical
     Canonical --> Scheduler["Scheduler reads only canonical spec"]
-    Pod -. "never read as parallel policy" .-> Scheduler
+    Deferred["VCJob/PodTemplate ergonomic sources"] -. "deferred" .-> Canonical
 ~~~
 
 支持路径：
 
-| 创建方式 | 转换责任 | canonical PodGroup |
+| 创建方式 | Alpha 状态 | canonical PodGroup |
 | --- | --- | --- |
-| VCJob | Job controller 复制、默认化并校验 typed field | VCJob 生成的 PodGroup |
-| 直接 PodGroup + member Pods | 用户直接提交 typed spec；webhook 校验 | 用户提交的 PodGroup |
-| Deployment/ReplicaSet | Pod template annotation 进入实际 Pod；PodGroup controller 解析 | owner 对应的自动 PodGroup |
-| StatefulSet | Pod template annotation 进入实际 Pod；PodGroup controller 解析 | StatefulSet 对应的自动 PodGroup |
-| bare Pod | PodGroup controller 解析；`minMember=1` | 该 Pod 的自动 PodGroup |
+| 直接 PodGroup | Alpha canonical；webhook 只做 schema/canonical 校验 | 用户提交的 PodGroup |
+| VCJob/partition | 延期；不作为 Alpha 必需输入 | 后续转换为 typed spec |
+| Deployment/ReplicaSet/StatefulSet/PodTemplate | 延期；不把 annotation 当平行 policy | 后续转换为 typed spec |
+| bare Pod | 延期；普通 Pod 不因 annotation 自动获得 Alpha policy | 后续单独评审 |
 
 ### 3.4 Authority、优先级与冲突
 
-authoring source 的 authority 顺序是：
-
-~~~text
-已存在的 canonical PodGroup typed spec
-  > owner VCJob typed spec
-  > Pod / Pod-template annotation（只用于尚无 typed policy 的自动 PodGroup）
-~~~
-
-“优先级”只决定谁有权物化 canonical spec，不表示高优先级可以静默覆盖低优先级的不同语义。controller/webhook 对所有
-同时存在的非空 source 做 canonical fingerprint 比较：
-
-- 只有一个 source：接受并物化；
-- 多个 source 规范化后相同：接受一次，不产生第二份策略；
-- 多个 source 规范化后不同：fail closed，返回或写入 `XPUTopologyPolicyConflict`；
-- 一个 PodGroup 中不同 member Pod 的 annotations 不同：整个 PodGroup fail closed；
-- member Pod annotation 与直接 PodGroup typed spec 不同：不得覆盖 PodGroup；
-- VCJob typed field 与生成 Pod/PodGroup 中的 annotation 不同：不得由子对象覆盖 owner intent；
-- 未通过解析/校验的 annotation：不得创建一个默认 hard policy，也不得让 scheduler 忽略它继续普通调度。
+Alpha 不冻结多源优先级。canonical source 只有已持久化的 PodGroup typed spec；任何延期 source 在进入 Alpha 前必须先物化为
+该字段。这样不会出现 owner/template/Pod annotation 相互覆盖，也不需要跨组件 fingerprint 协调。
 
 冲突解除前，xPU 的 `JobValid/JobEnqueueable` gate 必须识别 controller 写入的
 `PodGroupUnschedulable=True, Reason=XPUTopologyPolicyConflict`，即使 canonical spec 为空或仍是旧值也保持 Group Pending。
 这个 Condition 只是 fail-closed validation gate，不是第二份 policy；scheduler 的 workload topology 语义仍只来自 canonical spec，
-并且绝不把用户 workload annotation 当成运行时 assignment。用户的 `scheduling.volcano.sh/device-topology` 不能携带 Device ID 或运行时
-assignment；scheduler/provider 另用受控的 `volcano.sh/xpu-assignment` Pod annotation 记录已选 DeviceKeys，
+并且绝不把用户输入当成运行时 assignment。scheduler/provider 另用受控的 `volcano.sh/xpu-assignment` Pod annotation 记录已选 DeviceKeys，
 只在成功 Bind 的 Pod 上作为恢复输入。
 
 ### 3.5 Policy 更新合同
@@ -644,9 +576,9 @@ AND 没有已经进入本轮 Bind 的成员
 1. 没有已绑定成员时允许更新；新的 policy fingerprint 使旧 plan、fit cache 和 placement hint 全部失效；
 2. 已有已绑定成员后，只允许 canonical fingerprint 完全相同的 no-op 更新；
 3. 活动状态下修改 `mode/resource/scope/domainClass/applyTo/selector` 必须由 webhook 或 controller 拒绝；
-4. 删除 policy 也是语义更新，不能借删除绕过 drain；
-5. VCJob 和生成 PodGroup 必须使用 UID/resourceVersion CAS 保持同一 fingerprint；
-6. Pod template rollout 产生不同 annotations 时，旧 PodGroup 不原地切换策略；controller 应创建新的作用单元或要求用户先 drain；
+4. 删除 policy 也是语义更新，不能借删除绕过活动期保护；
+5. 由于 Alpha 只有 PodGroup typed source，普通 resourceVersion/CAS 足以保护更新；VCJob/template 传播规则延期；
+6. 后续 ergonomic source 若产生不同 policy，必须创建新的作用单元或先完成独立迁移评审；
 7. Pod cache 读取不一致、assignment annotation 缺失或 Node replacement 时按“不可恢复”处理，保持 hard Group Pending，而不是允许更新或猜测。
 
 ## 4. ID、Node 重建与失效
@@ -806,11 +738,11 @@ resource 相同，且 `Class.Scope` 对 `DeviceDomain` 为 `Node`、对 `FabricD
 stateDiagram-v2
     state replacement <<fork>>
     [*] --> OldActive: Node uid-old observed
-    OldActive --> OldTombstone: Node deleted
+    OldActive --> OldInvalid: Node deleted
     OldActive --> replacement: same name uid-new observed
-    replacement --> OldTombstone: retain old Pod references for diagnosis
+    replacement --> OldInvalid: invalidate old facts and references
     replacement --> NewPending: create new identity
-    OldTombstone --> [*]: old Pods gone or new plan selected
+    OldInvalid --> [*]: old references remain diagnostic only
     NewPending --> NewSynced: valid ReplaceFacts or ClearFacts
     NewPending --> NewPending: invalid or delayed old-UID update
 ~~~
@@ -820,8 +752,8 @@ stateDiagram-v2
 ### 5.1 ResourceTopologyDescriptor 与 DomainClass catalog
 
 `domainClass` 是管理员面向 workload 发布的稳定合同。workload author、Node annotation publisher 和 Provider 都不能各自解释
-同一个裸字符串。Alpha 直接固定一份 scheduler-side catalog；webhook、controller、Provider normalizer 和 scheduler
-都读取这份相同的 class 定义。Alpha 不支持运行期间修改该定义，后续如需增加或改变 class，另开设计和兼容性评审：
+同一个裸字符串。Alpha 固定一份 scheduler-side catalog；scheduler/plugin 是运行时权威消费者，webhook/controller 只校验字段形状，
+Provider 只把事实映射到 scheduler 已加载的 class。Alpha 不支持运行期间修改该定义，后续如需增加或改变 class，另开设计和兼容性评审：
 
 ~~~go
 type DomainClassDescriptor struct {
@@ -858,7 +790,7 @@ domainClasses:
 3. Alpha descriptor 不含数字 rank；hard policy 只匹配 workload 明确指定的 class，不隐式扩大到其他 class；
 4. policy compiler 找不到 class 时返回 `XPUTopologyDomainClassUnknown`；class 已知但当前 Provider capability 不能满足
    hard assignment 执行时返回 `XPUTopologyDomainClassUnsupported` 或更具体的 `XPUAssignmentNotEnforceable`；
-5. catalog 内容在 Alpha 生命周期内不可变；所有组件使用同一份固定定义。将来如需允许多个候选 class，应另行评审
+5. catalog 内容在 Alpha 生命周期内不可变；非 scheduler 组件不通过共享控制面读取它。将来如需允许多个候选 class，应另行评审
    `acceptableDomainClasses` 等显式 API，不能通过修改现有 class 含义或静默 fallback 实现。
 
 `Description` 是管理员与受信 Provider 之间的语义合同，不是 scheduler 可从图中自行证明的带宽标准。Normalizer 能验证的是
@@ -867,10 +799,9 @@ publisher 是 class 语义的信任根，V4 不声称仅凭 `name=local-scale-up
 
 V4 不接受 V3 的 workload `tier/tierName`。迁移必须由用户/controller 显式把旧类别映射成 catalog 中的 `domainClass`，创建
 新的 canonical policy。因为 structural schema 可能在 admission webhook 前 prune 未知字段，不能只从 Go type 删除旧字段：
-任何承载该 policy 的 served schema（包括首个 V4 实现；若曾试发 V3，也包括其 served version）必须在对应
-PodGroup/VCJob 路径保留仅用于拒绝的 legacy tombstone 字段，并以 CEL
-`!has(self.tier) && !has(self.tierName)` 永久拒绝；Go Public type 和 canonical model 不暴露它们。不能依赖客户端
-`fieldValidation=Strict`，也不能让 pruning 把旧 policy 变成缺省策略。
+只有在确认某个 served version 曾实际暴露 V3 字段时，该 version 才需要在对应 PodGroup/VCJob schema 保留仅用于拒绝的
+legacy tombstone，并以 CEL `!has(self.tier) && !has(self.tierName)` 拒绝；若没有实际 served V3，则不添加这套兼容字段。
+Go Public type 和 canonical model 永不暴露它们；不能让 pruning 把已发布旧 policy 变成缺省策略。
 
 ### 5.2 Provider update contract
 
@@ -974,9 +905,9 @@ Alpha 的一个 `FabricKey` 只有一个 authoritative owner Node。owner Node �
 3. member Node 只发布自己的 local devices/domains，不得重复声明同一 `FabricKey`；
 4. cache 只有在每个 member Node 已 `Synced`，且每个 local Domain 能解析到当前 NodeUID 和 source generation 时才发布 Fabric；
 5. canonical Fabric 保存 `OwnerNodeUID` 和每个 member 的 `NodeUID + SourceGeneration + LocalDomainKeys`；
-6. owner 的新 generation 可以完整替换成员；被删除成员仍有 active owner 时保留 tombstone，不进入 candidate index；
+6. owner 的新 generation 可以完整替换成员；被删除成员立即从可用 membership 中移除，不进入 candidate index；
 7. owner 删除、换 UID、stale 或 ClearFacts 会立即使 Fabric 对新 hard plan 不可用；
-8. owner identity 变更不得无条件接管同一个 Fabric ID。必须先显式清除旧声明、处理完旧 allocation/tombstone，再由新 owner 发布；
+8. owner identity 变更不能继承旧 membership；新 owner 必须重新发布完整集合，旧声明立即失效；
 9. member Node 换 UID 后旧 Fabric 不自动复活，owner 必须发布更新 generation；
 10. 普通 Ethernet、IB、RoCE 或同一 HyperNode 关系不构成 xPU Fabric membership。
 
@@ -1046,40 +977,28 @@ closure、Provider RPC 或全量 clone。
 - plugin 不得在 `OnSessionOpen` 中 type-assert cache 再取一个较新的 topology view；
 - planning 全程使用 `ClusterInfo.DeviceTopology.Revision`；Bind 前只重新校验 plan 引用的 NodeUID、DeviceKey 和 membership，不产生外部副作用。
 
-### 5.6 Provider 重活、publish 与锁序
+### 5.6 Provider 重活与 immutable publish
 
-“进入同一次 Snapshot”只有在 publish 与 Node identity 也被协调时才成立。V4 的固定路径是：
+“进入同一次 Snapshot”只有在 publish 与 Node identity 也被协调时才成立。V4 只冻结以下可观察边界，不冻结具体锁名、锁序或
+并发原语：
 
 ~~~text
 Node informer event
-  -> enqueue existing Node work
-  -> under SchedulerCache.Mutex record current NodeName/UID/resourceVersion
-     and mark a replacement UID as Pending while invalidating old candidate facts
-  -> release all locks
-  -> parse, normalize and build graph closure
-  -> when a Provider validation hook exists, validate topology facts outside locks
-  -> acquire SchedulerCache.Mutex
-  -> verify NodeName still resolves to the same UID/resourceVersion
-  -> acquire topologyCache.mu
-  -> verify provider generation / current validation token
-  -> publish a new immutable snapshot pointer
-  -> release topologyCache.mu
-  -> release SchedulerCache.Mutex
+  -> record the current NodeName/UID/resourceVersion and invalidate old candidate facts
+  -> do parse, normalize, graph closure and Provider validation outside cache locks
+  -> before publish, re-check NodeName/UID/resourceVersion and source generation
+  -> publish a new immutable topology snapshot
 ~~~
 
-固定锁序是：
+`SchedulerCache.Snapshot()` 在同一观察点读取集群对象与已发布的 immutable topology pointer；它不执行解析、Provider RPC 或全量
+clone，也不要求第二次 topology snapshot 或固定次数的 retry。Provider parse、Normalizer 重活、外部 RPC 和持久 I/O 不得在
+cache synchronization 的临界区执行。具体同步实现必须避免旧 parse 结果覆盖新 Node，但不作为 Alpha framework contract。
 
-~~~text
-SchedulerCache.Mutex -> topologyCache.mu
-~~~
-
-禁止任何路径以 `topologyCache.mu -> SchedulerCache.Mutex` 获取锁。`SchedulerCache.Snapshot()` 已持有主锁时只 atomic-load
-immutable pointer，不再获取 topology write lock。Provider parse、Normalizer 重活、外部 RPC 和持久 I/O 都在两把锁外执行。
 Provider 校验失败只会使相应 facts 不可用；已通过 Provider/canonical 校验的 facts 仍可发布给 `soft` advisory。Alpha 不把外部
 allocation 状态作为 topology ingestion 的硬前置。
 
 如果锁外工作结束后 UID/resourceVersion 或 source generation 已变化，结果直接丢弃并重新入队；不能把旧 parse 结果发布给新 Node。
-Node identity 的 Pending/invalidation 和 `sc.Nodes` 可见性必须在同一主锁下更新，使任何 Session 至多看到：
+Node identity 的 Pending/invalidation 和 `sc.Nodes` 可见性必须在同一 cache 观察点更新，使任何 Session 至多看到：
 
 - 旧 Node + 旧 UID 的有效 view；或
 - 新 Node + 新 UID 的 `Pending` view；
@@ -1107,17 +1026,14 @@ type DeviceTopologySnapshot struct {
     Fabrics              map[FabricKey]FabricDomain
     DomainClasses        map[DomainClassKey]DomainClassDescriptor
     DomainsByClass       map[DomainClassKey][]DomainRef
-    ProvidersByClass     map[DomainClassKey][]ProviderIdentityRef
-    DeviceToDomains      map[DeviceKey][]LocalDomainKey
-    NodeToDomains        map[types.UID][]LocalDomainKey
     SchedulableByDomain  map[LocalDomainKey][]DeviceKey
 }
 ~~~
 
 `DomainRef` 是 snapshot 内部带判别字段的只读引用：`Scope=Node` 时只允许 `LocalDomainKey`，`Scope=Fabric` 时只允许
-`FabricKey`。也可以在实现中拆成 `LocalDomainsByClass` 与 `FabricsByClass` 两个强类型索引，但不能每次规划再扫描并猜测类别。
-所有 index 必须只包含 class、resource 和 scope 一致且已通过 descriptor 校验的对象，并按 canonical key 稳定排序。
-`ProvidersByClass` 来自已启用 Provider 的受控 capability 注册，不从当前是否恰好有一个 Domain 对象反向猜测支持能力。
+`FabricKey`。Alpha 只要求 `DomainsByClass` 和 `SchedulableByDomain` 两个规划索引；其他索引可在实现阶段按 profile 派生，
+不作为 plugin contract。所有 index 必须只包含 class、resource 和 scope 一致且已通过 descriptor 校验的对象，并按 canonical key 稳定排序。
+Provider capability 是受控注册事实，不从当前是否恰好有一个 Domain 对象反向猜测支持能力。
 固定 catalog 不在运行期间切换；catalog 缺失或非法时 topology manager 不 Ready，不能用另一份 class 定义继续规划。
 
 Plan 记录全局 `Revision` 用于诊断，并校验实际引用对象的 membership、source generation 和 NodeUID。提交时不要求整个 `Revision`
@@ -1191,7 +1107,7 @@ type PodXPUAssignment struct {
 - hard policy 的 anchor 无法无歧义恢复时 fail closed，不能静默选择第二个 Fabric；
 - policy fingerprint 不同的 plan 不能复用当前 Session 的旧 anchor；已有绑定成员后 semantic mutation 直接拒绝；
 - NodeUID、DeviceKey、class 或 membership 不一致时，不能把同名 Node/class 重新解释为旧 anchor；
-- 可选 PodGroup anchor 摘要只作快速索引，丢失或过期后必须从成员 Pod 重建；
+- 不写入 PodGroup anchor 摘要；恢复直接扫描成员 Pod，避免引入可过期的重复状态源；
 - Alpha 不处理 Pod 消失后的外部 allocation lifecycle；相关状态不作为后续 Session 的恢复事实。
 
 ### 6.3 与 Network Topology 的组合
@@ -1272,9 +1188,8 @@ Planner 是 side-effect-free 的，不能修改外部或 Session 之外的 live 
 1. Task 按候选 Domain 最少、请求 Device 数最多、现有 Task order、PodUID 排序；
 2. Domain/Device 按 3.2 的 deterministic Compact 顺序枚举；
 3. plan-owned `NodeInfo` clone 重放普通 `AddTask` 资源记账，防止多个 Task 分别可放但合计超量；
-4. greedy 无法完成时可做 bounded backtracking；
-5. `maxSearchStates/maxCandidateDomains/maxPlanningAttempts/deadline` 到达时返回
-   `XPUTopologyPlanningBudgetExceeded`，不能假报 `NotEnoughResources`；
+4. greedy 无法完成时可做实现阶段确定的有限回溯；具体状态数、候选数和时间阈值不进入 Alpha plugin contract；
+5. 规划超过实现阶段的有限预算时保持 Pending，并记录低基数诊断，不假报普通资源不足；
 6. provisional plan 不产生外部副作用；只有 winning Statement 的 final plan 可以进入现有逐 Pod Bind，并写入 scheduler-owned
    assignment annotation。
 
@@ -1460,28 +1375,17 @@ type TopologyContainerAssignment struct {
     DeviceKeys    []DeviceKey
 }
 
-type TopologyDomainSelection struct {
-    ApplyTo        DeviceTopologyApplyTo
-    Class          DomainClassKey
-    LocalDomainKey *LocalDomainKey // exactly one of LocalDomainKey/FabricKey
-    FabricKey      *FabricKey
-}
-
 type TopologyTaskPlacement struct {
-    TaskID          api.TaskID
     PodUID          types.UID
     NodeName        string
     NodeUID         types.UID
-    DomainSelections []TopologyDomainSelection
     Assignments     []TopologyContainerAssignment
 }
 
 type TopologyPlacementPlan struct {
-    PlanID                   string
     GroupRef                 TopologyGroupRef
     PolicyFingerprint        string
-    SnapshotRevision         uint64
-    ReferencedFingerprints   map[ObjectKey]string
+    SnapshotRevision         uint64 // paired snapshot used for planning
     Placements               []TopologyTaskPlacement
 }
 ~~~
@@ -1499,10 +1403,8 @@ Alpha 中每个目标 resource 的 `Assignments` 恰有一项。Bind 前由 sche
 
 Provider/Device Plugin 至少必须能消费或确认 `DeviceKeys`，并保持该 annotation 在已绑定 Pod 上可读。重建 anchor 时使用
 PodUID、Pod `spec.nodeName`、NodeUID、ResourceName、Provider 和 DeviceKeys；任何 NodeUID/DeviceKey 不一致都使 Group Pending。
-annotation 可附带 `localDomainKeys`、`fabricKeys`、`groupRef` 或 `planDigest` 作为快速索引，但这些派生字段丢失/过期时必须从
-Pod 与当前 topology snapshot 重建，不能成为第二份权威事实。
-`DomainSelections` 按 policy/class stable key 排序，避免多 resource 或 Node+Fabric 双 policy 丢失拓扑约束。Filter/Score/Allocate 阶段
-不得再次运行厂商 chooser 并替换 plan 中的 ID。
+assignment annotation 不附带 `localDomainKeys`、`fabricKeys`、`groupRef` 或 `planDigest` 等派生字段。planner 只返回满足
+当前 policy 的 NodeUID、DeviceKeys 和必要的 GroupRef；Bind 前重新校验这些引用，不能由 Provider 或后续 callback 重选 ID。
 
 ### 7.3 Provider/Device Plugin identity contract
 
@@ -1515,7 +1417,6 @@ type XPUAssignmentProvider interface {
     IdentityContract() DeviceIdentityContract
     DomainClassCapabilities() []DomainClassCapability
     ValidateTopology(ctx context.Context, facts NodeTopologyFacts) error
-    SelectDevices(ctx context.Context, req DeviceAssignmentRequest) ([]DeviceKey, error)
     ValidateAssignment(ctx context.Context, req DeviceAssignmentRequest, keys []DeviceKey) error
 }
 ~~~
@@ -1528,7 +1429,8 @@ type DeviceIdentityContract struct {
 }
 ~~~
 
-Alpha 不定义 scheduler-side allocation owner。Provider identity contract 必须与
+Alpha 不定义 scheduler-side allocation owner。scheduler planner 拥有最终 DeviceKeys 选择权；Provider 只能校验或消费 selected keys。
+Provider identity contract 必须与
 `DeviceIdentityContract{ProviderID, Namespace, ResourceName}` 完全匹配；`DomainClassCapabilities()` 只声明 Provider 能解释哪些
 固定 catalog class，不创建 class、不改变 `DomainClassKey` identity，也不能用通配符绕过 hard policy。Provider 能发现某 class 但
 不能消费或确认选中的 DeviceKeys 时，`soft` 仍可使用有证据的 preference，`hard` 对相关 workload 返回
@@ -1548,7 +1450,7 @@ Session 打开时从已绑定/运行成员 Pod 的 `spec.nodeName` 与 `volcano.
 1. 只接受 `AllocatedStatus` 且 `NodeName` 非空的成员；未绑定 Pod 不建立跨 Session anchor；
 2. assignment annotation 必须能解析出 `resourceName/provider/deviceKeys`，并通过当前 NodeUID 和 topology snapshot 校验；
 3. 成员映射到同一 LocalDomain/Fabric 时建立本次 Session 的 `PodDerivedGroupAnchor`；缺失或冲突则 hard Pending；
-4. PodGroup 摘要、metrics 和日志只能作为索引/诊断，丢失后从 Pod 重建；
+4. metrics 和日志只能作为诊断信息，不承担恢复事实；
 5. 只有一个 active scheduler leader 负责同一 Group；恢复输入仅来自已绑定 Pod，不协调外部 allocation owner。
 
 ### 8.2 PodGroup Condition/Reason 写入路径
@@ -1589,22 +1491,16 @@ xPU filter/plan/assignment validation produces structured result
 `Scheduled` outcome，避免用户看到陈旧 True。Condition message 可以包含 resource、scope、domainClass、required count、最大可用 Domain
 count 和 provider 状态，但不能把 DeviceID/PodUID 用作 metrics label。
 
-建议 reason：
+Alpha 只冻结少量可供 controller/scheduler 判断的 outcome 类别；具体细分 reason、message 和指标标签由实现阶段确定，不能成为
+跨组件 API 依赖。最小集合为：
 
 ~~~text
-XPUTopologyPolicyConflict
 XPUTopologyPolicyInvalid
 XPUTopologyPolicyMutationForbidden
-XPUTopologyDomainClassUnknown
-XPUTopologyDomainClassUnsupported
 XPUTopologyDataNotReady
-XPUTopologyStale
-XPUTopologyUnsupportedPodRequest
+XPUTopologyUnavailable
 XPUAssignmentNotEnforceable
-XPUDeviceDomainFragmented
-XPUFabricDomainUnavailable
-XPUDeviceUnhealthy
-XPUTopologyPlanningBudgetExceeded
+XPUTopologyResolved
 ~~~
 
 策略 authoring 冲突出现在 scheduler Session 之前时：
@@ -1621,25 +1517,25 @@ XPUTopologyPlanningBudgetExceeded
 
 | 失败点 | hard 行为 | Alpha 结果 | Condition/Reason |
 | --- | --- | --- | --- |
-| gate 关闭但收到新建/新增 xPU policy | admission reject | 不产生 canonical active policy | admission error / `XPUTopologyFeatureDisabled` |
-| gate 与 plugin 只启用一个 | scheduler 不 Ready 或拒绝热更新 | 不启动/切换 topology manager | configuration error |
-| plugin 参数非法或 Alpha 配置带 resource owner | scheduler 不 Ready 或保留上一份配置 | Alpha 不创建跨系统 owner | configuration error |
-| 有已绑定 topology Pod 时移除 plugin 或改变 policy identity | 拒绝配置切换/更新，要求先 drain | 已绑定 Pod annotation 继续作为只读恢复输入 | configuration error / `XPUTopologyPolicyMutationForbidden` |
+| gate 关闭但收到新建/新增 xPU policy | admission reject | 不产生 canonical active policy | admission error / implementation-defined policy-invalid |
+| gate 与 plugin 只启用一个 | 首次启动不 Ready | 不启动 topology manager；热更新行为属于后续发布流程 | configuration error |
+| plugin 参数非法或 Alpha 配置带 resource owner | 首次启动不 Ready | Alpha 不创建跨系统 owner；不冻结旧配置保留语义 | configuration error |
+| 有已绑定 topology Pod 时移除 plugin 或改变 policy identity | 拒绝配置切换/更新 | 已绑定 Pod annotation 继续作为只读恢复输入；具体迁移/关闭顺序属于后续发布验收 | configuration error / `XPUTopologyPolicyMutationForbidden` |
 | 新 Node provider 仍 Pending | 当前候选 fail closed | 不建立新 assignment；旧 UID 不复用 | `XPUTopologyDataNotReady` |
-| annotation/typed policy 冲突 | Group Pending | 不产生 plan | `XPUTopologyPolicyConflict` |
-| V4 policy 携带旧 `tier/tierName` 或缺 `domainClass` | admission reject；controller 路径 Group Pending | 不产生 canonical plan | `XPUTopologyPolicyInvalid` |
-| `(resourceName, scope, domainClass)` 不在 catalog | policy fail closed | 不产生 plan | `XPUTopologyDomainClassUnknown` |
-| class 已知但 Provider 不能消费/确认 DeviceKey | Group Pending | 不产生 Bind/assignment | `XPUTopologyDomainClassUnsupported` / `XPUAssignmentNotEnforceable` |
+| annotation/typed policy 冲突 | Group Pending | 不产生 plan | `XPUTopologyPolicyInvalid` |
+| direct PodGroup V4 policy 缺 `domainClass`，或在实际 served V3 version 上携带旧 `tier/tierName` | direct PodGroup admission reject；无 served V3 时不新增旧字段兼容路径 | 不产生 canonical plan | `XPUTopologyPolicyInvalid` |
+| `(resourceName, scope, domainClass)` 不在 catalog | policy fail closed | 不产生 plan | `XPUTopologyPolicyInvalid` |
+| class 已知但 Provider 不能消费/确认 DeviceKey | Group Pending | 不产生 Bind/assignment | `XPUAssignmentNotEnforceable` |
 | 活动期修改 policy | 拒绝更新；旧 fingerprint 继续有效 | 不改变已绑定 Pod 的 anchor | `XPUTopologyPolicyMutationForbidden` |
-| Provider stale/invalid | 不使用新 hard plan | 已绑定 Pod 不被内存回滚；新成员保持 Pending | `XPUTopologyStale` |
-| Node 同名重建 | 新 UID Pending；旧 key 不候选 | 旧 Pod assignment 不映射到新 UID；Alpha 不维护外部 tombstone | `XPUTopologyDataNotReady` |
-| Fabric owner/member UID 变化 | Fabric 不可用，等待 owner 重发完整集合 | active key 保留 | `XPUFabricDomainUnavailable` |
+| Provider stale/invalid | 不使用新 hard plan | 已绑定 Pod 不被内存回滚；新成员保持 Pending | `XPUTopologyDataNotReady` |
+| Node 同名重建 | 新 UID Pending；旧 key 不候选 | 旧 Pod assignment 不映射到新 UID；旧引用只作诊断 | `XPUTopologyDataNotReady` |
+| Fabric owner/member UID 变化 | Fabric 不可用，等待 owner 重发完整集合 | 旧 membership 立即失效 | `XPUTopologyUnavailable` |
 | 6+2 请求同 Domain 8 | Node 不可行 | 不进入 Bind | `XPUDeviceDomainFragmented` |
 | 请求来自多 Container/init/shared unit | Group Pending 或 admission reject | 不进入 Bind | `XPUTopologyUnsupportedPodRequest` |
 | Provider 不能消费/确认 selected DeviceKey | hard 不调度 | 无 assignment/Bind | `XPUAssignmentNotEnforceable` |
-| bounded planner 耗尽 | retryable Pending | 不进入 Bind | `XPUTopologyPlanningBudgetExceeded` |
-| assignment annotation 缺失/非法（Alpha） | Group Pending | 不建立 anchor，不从摘要或 index 猜测 | `XPUAssignmentNotEnforceable` |
-| 已绑定成员的 anchor 冲突（Alpha） | Group Pending | 不选择第二个 Domain/Fabric | `XPUDeviceDomainFragmented` / `XPUFabricDomainUnavailable` |
+| planner 超出实现阶段的有限预算 | retryable Pending | 不进入 Bind | `XPUTopologyUnavailable` |
+| assignment annotation 缺失/非法（Alpha） | Group Pending | 不建立 anchor，不从 GPU index 或其他派生信息猜测 | `XPUAssignmentNotEnforceable` |
+| 已绑定成员的 anchor 冲突（Alpha） | Group Pending | 不选择第二个 Domain/Fabric | `XPUTopologyUnavailable` |
 | final NodeUID/DeviceKey/membership 改变（Alpha） | 丢弃并重新规划 | 不进入 Bind；不修改外部 allocation 状态 | `XPUTopologyDataNotReady` |
 
 soft policy 的 topology data/provider 不可用时只失去相应 preference，并记录低基数退化原因；它不能让一个普通 Predicate
@@ -1650,37 +1546,39 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 ### 10.1 Feature gate、plugin 配置与生命周期
 
 - `XPUTopologyAwareScheduling` 注册为 Alpha、默认 `false`；默认 scheduler 配置不含 `xpu-topology-aware`；
-- scheduler gate × plugin 四种组合全部覆盖，只有二者同时启用且参数有效时 Ready；
+- scheduler gate × plugin 四种组合全部覆盖；二者未同时启用时 activation fail closed，参数非法时只阻止相关 xPU policy 落入普通路径；
 - admission gate 关闭时拒绝创建/新增/修改 policy，但允许删除 policy；scheduler core guard 阻止存量非空 policy 落入普通路径；
-- admission gate 开启但目标 scheduler config 缺少 plugin、参数非法、不可读或 digest 不一致时仍拒绝非空 policy；
-- Helm render 测试证明 scheduler 与 admission 都收到同名 gate，scheduler ConfigMap 包含完整 plugin 配置；
-- `ValidatePluginOption` 拒绝 unknown key、非正 duration/budget、`enablePredicate=false` 和 `enableNodeOrder=false`；热更新失败时保留上一份配置；
-- gate/plugin 启用但 authoritative catalog/config source 不可读时 scheduler readiness fail closed；单个 Node provider facts Pending
+- admission gate 开启时只做 policy schema/canonical 校验；scheduler plugin 缺失、参数非法或 catalog 不可读时 scheduler 对非空 policy fail closed；
+- Helm render 测试证明 gate/plugin 的静态配置可交付；不要求 scheduler/admission 共享运行时 digest；
+- `New` 的参数解析覆盖缺省值、类型错误、格式错误和范围错误；非法 Provider 配置不能让 xPU policy 落入普通调度路径；
+- gate/plugin 启用但 scheduler catalog 不可读时 scheduler readiness fail closed；单个 Node provider facts Pending
   只使对应 hard 候选/Job Pending，不阻塞整个 scheduler；
 - `New/Name/OnSessionOpen/OnSessionClose` 生命周期测试证明每个 Session 只使用 `ClusterInfo` 配对 view，且 close 不释放 Provider/cache；
-- `OnSessionOpen` 注册 JobValid、Predicate、BatchNodeOrder、GroupPlan 和 overlay EventHandler；不注册 Reserve、第二个 HyperNode gradient
+- `OnSessionOpen` 注册 JobValid、Predicate、BatchNodeOrder 和 overlay EventHandler；Group planner 由 allocate 私有调用；不注册 Reserve、第二个 HyperNode gradient
   或复制 `JobReadyFn`；
 - enabled-no-policy 的回归结果与 plugin-disabled 调度决定一致；只允许出现受控的 snapshot/回调开销；
-- plugin removal、Provider/identity 变更在已有绑定 topology Pod 或 semantic policy activity 存在时被拒绝；
+- plugin removal、Provider/identity 变更必须保持非空 policy fail closed；已有绑定 Pod 的 semantic mutation 仍被拒绝，具体 drain 属后续发布设计；
 - 单 active leader 的配置读取与 Session 重建测试通过；恢复只依赖已绑定 Pod 的 Pod-derived anchor。
 
 ### 10.2 API 和 canonicalization
 
 - `hard/soft` default 和 invalid value reject；`scope/domainClass` 必填且语法校验；
-- V4 Go type 不暴露旧字段；served PodGroup/VCJob OpenAPI 的 reject-only tombstone + CEL 与 annotation strict decoder 均拒绝
-  `tier/tierName`，即使客户端未启用 `fieldValidation=Strict` 也不能 prune 后接受；
+- V4 Go/canonical model 不暴露旧字段；Alpha 只验证 direct PodGroup typed spec 的 strict schema/canonicalization。若确认某个
+  served V3 version 实际暴露过 `tier/tierName`，仅对该 version 增加 reject-only tombstone + CEL，证明即使客户端未启用
+  `fieldValidation=Strict` 也不会在 prune 后接受；没有实际 served V3 时不新增兼容字段，VCJob 等延期入口不纳入本 Alpha 验收；
 - 同名 class 在不同 resource/scope 下编译成不同 `DomainClassKey`；workload 不能用具体 Domain ID 充当 class；
 - catalog 未声明的 class 对 hard/soft 都按 authoring error 拒绝；已知但不可 exact 执行的 hard class fail closed；
-- Public schema、Pod annotation 和 VCJob field 规范化后 fingerprint 一致；
+- direct PodGroup canonical spec 的 normalized policy 产生稳定 `PolicyFingerprint`；Pod assignment annotation 不参与用户 policy
+  fingerprint，VCJob/其他 source 的 field fingerprint 待其未来接入时另行定义；
 - `PolicyFingerprint` 包含规范化后的 `domainClass`；固定 catalog 只提供 class 定义，不参与 workload 版本判断；
 - reordered/exact-duplicate policies 得到同一 fingerprint，duplicate Group policy 只生成一个 anchor selection；重叠 selector 的
   不同 class fail closed；
 - annotation 无 `allocationStrategy`，Public schema 也拒绝该字段；
 - direct PodGroup 与 Pod annotation 相同可接受，不同 fail closed；
-- VCJob 与 child annotation 不同 fail closed；
+- VCJob/child annotation 多源冲突不属于 Alpha canonical path；后续 source 接入前必须单独定义冲突规则；
 - canonical spec 为空但 `XPUTopologyPolicyConflict=True` 时，`JobValid/JobEnqueueable` 仍阻止调度；
-- Deployment/ReplicaSet、StatefulSet、bare Pod 均只生成 canonical PodGroup policy；
-- scheduler 测试证明它从不直接读取 workload annotation；
+- VCJob/Deployment/StatefulSet/bare Pod ergonomic source 在 Alpha 中不产生 topology policy；
+- scheduler 测试证明它只读取 PodGroup canonical spec，不读取 workload annotation；
 - quiescent 更新成功并废弃旧 plan；活动期 mutation 被拒绝；
 - invalid annotation 不回落成默认 hard，也不按无 policy 调度。
 
@@ -1700,7 +1598,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - owner 必须发布完整集合，member UID/generation 变化后必须重发；
 - `ClusterInfo.Nodes` 与 `DeviceTopology.NodeIdentities` 在并发 Node replacement 下不存在新 Node/旧 UID 混合；
 - Snapshot 指针 publish 后不可变；Provider update 不改变旧 Session view；
-- provider parse 在锁外；锁序测试和 race test 不出现反向加锁；
+- provider parse 在锁外；并发/race test 不允许旧 parse 覆盖新 identity；
 - 不存在 dual-snapshot retry count 或 plugin 二次捕获。
 
 ### 10.4 Filter、Compact 和 Group
@@ -1730,18 +1628,18 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - HyperNode API 不增加 Device 或外部 allocation 字段；
 - Mock/KWOK 覆盖 fragmented/fitting Domain、explicit Fabric、Node replacement、health update 和失败回滚；
 - Provider assignment identity 与 Pod-derived anchor 只在已验证的范围内声明；
-- benchmark 对比 plugin disabled、enabled-no-policy、soft 和 hard；
-- metrics 覆盖 provider age/error、snapshot publish latency、plan duration/budget、assignment annotation/recovery result 和结构化 reason；
+- 后续发布验收再 benchmark plugin disabled、enabled-no-policy、soft 和 hard；Alpha 只要求基本可观测性，不冻结 P50/P95/P99、CPU/RSS、GC 或吞吐阈值；
+- metrics 只保留低基数的 provider/snapshot/plan/recovery 结果；具体指标名、budget 计数和 reason taxonomy 由实现阶段确定；
 - Event/metrics label 禁止使用 raw DeviceID 或 PodUID。
 
 ## 11. PR 拆分与交付阶段
 
-### 11.1 PR 0：API 与 framework contract review
+### 11.1 PR 0：API 与最小 framework contract review
 
-- 冻结 `XPUTopologyAwareScheduling` gate、`xpu-topology-aware` plugin 名、双重启用/禁用和 safe-drain 合同；
-- 冻结 plugin arguments、严格 validator、process manager 与 per-Session plugin 的生命周期边界；
+- 冻结 `XPUTopologyAwareScheduling` gate、`xpu-topology-aware` plugin 名、双重启用/禁用和 fail-closed 合同；
+- 冻结最小 plugin arguments、严格 validator、process manager 与 per-Session plugin 的生命周期边界；不冻结 reload/drain 状态机；
 - 冻结 `DeviceTopologySpec` 的 hard/soft、applyTo、scope/domainClass，并明确拒绝 `tier/tierName`；
-- 确定 `ResourceTopologyDescriptor` 的固定 authoritative 载体和 webhook/controller/Provider/scheduler 的统一读取路径；
+- 确定 scheduler-side `ResourceTopologyDescriptor` catalog 的固定语义；不冻结跨组件共享读取协议；
 - 明确 Public API 无 allocationStrategy；
 - 评审 Pod annotation key、canonicalization 和 mutation webhook；
 - 冻结 `volcano.sh/xpu-assignment` annotation 的最小字段、canonical DeviceKey 和 Pod Bind 传递路径；
@@ -1750,7 +1648,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 ### 11.2 PR 1：canonical model、Provider 和 identity
 
 - 注册默认关闭的 Alpha feature gate、plugin builder/config validator 和 Helm scheduler/admission gate 配置；
-- 实现 gate/plugin 组合校验、存量 typed-policy guard、热更新拒绝与 activation digest/readiness；
+- 实现 gate/plugin 组合校验、存量 typed-policy guard 和 scheduler-side catalog readiness；不实现 activation digest；
 - 建立 process-scoped topology manager；plugin `New/OnSessionOpen/OnSessionClose` 不拥有 Provider 生命周期；
 - 实现 `DomainClassKey`、descriptor catalog、Device/LocalDomain/Fabric IDs 和 keys；
 - `DeviceDomain/FabricDomain.Class`、`DomainsByClass` 与固定 catalog 校验后的 topology publish；
@@ -1762,8 +1660,8 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 ### 11.3 PR 2：ClusterInfo snapshot 与 Advisory MVP
 
 - `ClusterInfo.DeviceTopology` 和同一次 `SchedulerCache.Snapshot()` 捕获；
-- 按固定锁序 publish immutable pointer；
-- Pod/VCJob/PodGroup canonicalization 和 Condition reason；
+- 在重新校验 NodeUID/source generation 后 publish immutable pointer；具体锁序留给实现；
+- PodGroup canonicalization 和最小 Condition outcome；VCJob/PodTemplate source 延期；
 - 实现 plugin 的 JobValid、Predicate、BatchNodeOrder 与 Session overlay EventHandler；
 - `scope/domainClass` compiler、Node/Fabric class filter、soft score、internal deterministic Compact；
 - plugin-disabled/no-policy 回归和并发 snapshot 测试。
@@ -1779,13 +1677,13 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - action bypass、Node replacement、annotation 缺失/冲突和单 leader 测试；
 - 不新增外部 allocation owner 或多 Pod Bind barrier。
 
-### 11.5 PR 4：Fabric/Group E2E 与发布
+### 11.5 PR 4：Fabric/Group E2E 与后续发布验收
 
 - explicit Fabric + HyperNode intersection；
 - `Pod+Node` 与 `Group+Fabric` 双 class policy E2E；
 - 跨 wave anchor E2E；
-- KWOK scale、provider churn、Node replacement、Fabric owner replacement；
-- metrics、runbook、Helm/ConfigMap 用户文档和 safe-drain 演练；
+- provider churn、Node replacement、Fabric owner replacement；规模、性能、真实硬件、升级/回滚/drain 演练均为后续发布验收，不是 Alpha 合同前置；
+- metrics、runbook、Helm 用户文档和发布清单；
 - Provider assignment identity 和 Pod-derived Alpha 在已验证范围内发布。
 
 ## 12. 兼容性、明确不做与开放问题
@@ -1801,9 +1699,9 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 7. Mock/Annotation 不升级成真实硬件 exact-ID 证据；
 8. Kubernetes Binding 不描述为整组原子提交；
 9. feature/plugin/Provider identity 配置不一致时 fail closed；
-10. 禁用 Alpha feature 前必须处理受保护的已绑定 topology Pod 和 semantic policy activity；
-11. V4 与 V3 schema 不做透明兼容；旧 `tier/tierName` 必须显式迁移为 catalog class，不能 silent prune/fallback；
-12. gate/plugin 失配、存量 policy 未 drain 或 plugin config 无效时必须拒绝启动/热更新或阻止该 Job，不能回落到普通调度。
+10. gate/plugin/catalog 失配时非空 policy 必须 fail closed；具体关闭、升级和 drain 流程属于后续发布验收；
+11. V4 与 V3 schema 不做透明兼容；旧 `tier/tierName` 只有在确认实际 served 过时才启用 reject-only 兼容规则，不能 silent prune/fallback；
+12. Alpha 不冻结跨 scheduler/admission/controller 的 activation digest、共享 catalog 协议或过细 reason taxonomy。
 
 ### 12.2 已决定，不再作为开放问题
 
@@ -1820,6 +1718,8 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - topology-aware victim choice、外部 allocation lifecycle 和多 Pod 原子 Bind 均不属于首个 Alpha；
 - feature gate 名为 `XPUTopologyAwareScheduling`、Alpha 默认关闭；scheduler plugin 名为 `xpu-topology-aware`，必须双重显式启用；
 - process-scoped topology manager 与 per-Session plugin 生命周期分离；`OnSessionClose` 不停止 Provider/cache；
+- scheduler planner 拥有最终 DeviceKeys 选择权；Provider 不提供 chooser，只做 selected-key 校验/消费；
+- Group planner 先作为 allocate 内部集成，不新增通用组规划注册 API；
 - Alpha 的首个 Provider 目标为 NVIDIA，resource 为 `nvidia.com/gpu`；XPU-01 使用 nvml-mock 验证 selected DeviceKey、annotation
   和恢复。
 
@@ -1828,12 +1728,12 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 | 优先级 | 问题 | 不确定的只是 | 已固定的底线 |
 | --- | --- | --- | --- |
 | P0 | Alpha 的 Pod assignment annotation 传递形状 | BindContext extension、Pod metadata 写入位置和 key 命名 | 已绑定 Pod 必须保留 NodeName + canonical DeviceKeys；摘要不能成为唯一事实源 |
-| P0 | `ResourceTopologyDescriptor` 的 authoritative 载体与一致分发 | Alpha 固定 catalog 的具体交付文件/ConfigMap 形状 | webhook/controller/Provider/scheduler 必须消费同一份固定 class 定义；运行期间不可修改 |
-| P1 | plugin config validator 的 framework 形状 | generic validator registry、让 builder 返回 error 或 scheduler 专用校验 | 必须在首个 Session 前严格失败；热更新失败保留上一配置，不能只在 `OnSessionOpen` warning |
-| P1 | early domain feasibility 如何与 HyperNode candidate path 组合 | 新 hook 的位置和数据结构 | 不注册第二个 first-plugin-wins gradient |
+| P0 | `ResourceTopologyDescriptor` 的 scheduler-side 载体 | 静态配置、安装文件或 ConfigMap 的交付形状 | DomainClassKey 语义固定；scheduler 不得在未知 class 上规划；运行期间不可修改 |
+| P1 | allocate 内部 planner 的插入点 | 是否复用现有 action helper 或新增私有 package | side-effect-free、paired snapshot、final Node/DeviceKey revalidation；不冻结通用 framework hook |
+| P1 | plugin config validator 的 framework 形状 | generic validator registry 或 scheduler 专用校验 | 首次启动前必须严格失败；不把错误变成普通调度 |
 | P1 | `domainClass` 名称语法与 catalog 演进规则 | DNS label 的精确限制、废弃窗口和版本策略 | key 至少包含 resource+scope+name；V4 拒绝旧字段和隐式 fallback |
 | P1 | 是否需要显式多个 acceptable classes | 独立 API 形状和优先级 | 首个 Alpha 只接受单一精确 class；不得用 internal rank 自动扩大 |
-| P1 | Fabric mock/KWOK 与真实 Fabric 验收的发布节奏 | milestone 顺序 | 普通网络不可自动推导 Fabric |
+| P1 | Fabric mock 与真实 Fabric 验收的发布节奏 | milestone 顺序 | 普通网络不可自动推导 Fabric；真实硬件不阻塞 Alpha 文档合同 |
 
 ### 12.4 后续研究清单
 
@@ -1851,21 +1751,21 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 | Feature gate | `pkg/features/volcano_features.go` | 注册 `XPUTopologyAwareScheduling` Alpha，默认 `false` |
 | 进程参数 | `cmd/scheduler/main.go`、`cmd/webhook-manager/main.go` | 复用现有 `--feature-gates` plumbing，scheduler/admission 同名启用 |
 | Helm 配置 | `installer/helm/chart/volcano/values.yaml`、`templates/scheduler.yaml`、`templates/admission.yaml` | 传递两个 component gate；完整覆盖 scheduler ConfigMap 时保留其他 plugin |
-| Scheduler config validation | `pkg/scheduler/util.go`、`pkg/scheduler/scheduler.go`、`pkg/scheduler/framework/plugins.go`（建议扩展） | gate/plugin 矩阵、严格 plugin option 校验、热更新 drain 与上一配置保留 |
+| Scheduler config validation | `pkg/scheduler/util.go`、`pkg/scheduler/scheduler.go`、`pkg/scheduler/framework/plugins.go`（建议扩展） | gate/plugin 矩阵和最小静态 option 校验；reload/drain 属后续发布 |
 | Plugin factory | `pkg/scheduler/plugins/factory.go` | 注册 `xpu-topology-aware` builder 与 proposed config validator |
 | 当前 ClusterInfo | `pkg/scheduler/api/cluster_info.go` | 增加 immutable `DeviceTopology` 字段 |
 | 当前 snapshot | `pkg/scheduler/cache/cache.go:SchedulerCache.Snapshot` | 同主锁观察点捕获 cluster + topology pointer |
 | Session 初始化 | `pkg/scheduler/framework/session.go:openSession` | 从 ClusterInfo 取得同一 topology view |
-| Topology manager | `pkg/scheduler/topology/manager/`（建议） | process-scoped Provider/cache/snapshot publisher 生命周期与 activation digest |
+| Topology manager | `pkg/scheduler/topology/manager/`（建议） | process-scoped Provider/cache/snapshot publisher 生命周期；不承担跨组件 digest |
 | Provider/normalizer | `pkg/scheduler/topology/provider/`（建议） | Annotation/Mock parse、validate、NodeUID/RV/generation |
-| Descriptor catalog | Alpha 固定 ConfigMap/静态配置；scheduler canonical type（建议） | 管理员 class 合同、只读加载和一致分发 |
+| Descriptor catalog | Alpha scheduler-side 静态配置/安装输入（具体载体待定） | 管理员 class 合同和只读加载 |
 | live topology | `pkg/scheduler/cache/topology_cache.go`（建议） | facts、descriptor view、readiness、class indexes、immutable publish；Pod assignment 由 Pod/cache 读取 |
 | Pod canonicalization | `pkg/controllers/podgroup/pg_controller_handler.go`、Job controller、webhook | authoring source 转换、冲突和 mutation validation |
 | Public types | `staging/src/volcano.sh/apis/pkg/apis/scheduling/`、batch API | `DeviceTopologySpec` typed schema 与生成代码 |
 | 当前 Statement | `pkg/scheduler/framework/statement.go` | 保留普通 Commit；Alpha 只接入 Session-local group plan，不新增提交参与者 |
 | 当前 bind path | `pkg/scheduler/cache/cache.go:AddBindTask/executePreBinds/BindTask` | Alpha 复用逐 Pod Bind，并确保 Task PodAnnotations 随 Bind 保留 |
 | Condition | `pkg/scheduler/framework/session.go:UpdatePodGroupCondition`、`job_updater.go` | 聚合具体 xPU reason 并回写 PodGroup status |
-| Plugin | `pkg/scheduler/plugins/xpu-topology-aware/`（建议） | `New/Name/OnSessionOpen/OnSessionClose`；JobValid、Predicate、BatchNodeOrder、group plan、assignment annotation 和 Session overlay |
+| Plugin | `pkg/scheduler/plugins/xpu-topology-aware/`（建议） | `New/Name/OnSessionOpen/OnSessionClose`；JobValid、Predicate、BatchNodeOrder、Session overlay；group planner 在 allocate 私有集成 |
 | Provider | `pkg/scheduler/topology/provider/`（建议） | identity contract、selected DeviceKey 消费/确认、topology facts |
 
 ## 附录 B. 关键不变量
@@ -1885,7 +1785,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 13. AdmissionSet 覆盖 winning Statement 中该 Group 的全部新 Allocate operations。
 14. Alpha Pod assignment annotation 至少包含 `version/resourceName/provider/deviceKeys`；DeviceKeys 必须包含 NodeUID-safe identity。
 15. 已绑定 Pod 的 `spec.nodeName + xpu-assignment` 是跨 Session anchor 的恢复输入；缺失/冲突时 Group hard Pending。
-16. PodGroup anchor 摘要、metrics 和日志可丢失并重建，不是第二份事实源。
+16. metrics 和日志可丢失并重建，不是恢复事实源。
 17. Alpha 不把 Pod eviction、FutureIdle、列表缺项或 observation 缺席解释成 external Released。
 18. Kubernetes per-Pod Bind 非原子，设计不声称可以原子 unbind。
 19. 非空 xPU policy 只有在 `XPUTopologyAwareScheduling` gate 与 `xpu-topology-aware` plugin 同时有效时才可调度；任何失配都 fail closed。

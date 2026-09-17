@@ -11,13 +11,14 @@
 
 XPU-00 不新增 feature gate、CRD 字段或 scheduler plugin 实现。它只解决如果不先统一、会导致
 当前 Alpha 工作包跨组件返工的合同问题。Alpha 的 anchor 采用现有 HyperNode 同类的 Pod-derived 方案，不新增独立的
-Group evidence store。
+Group 持久化记录。
 
 完成 XPU-00 需要同时具备：
 
 1. 各项决策都有一个明确的 Alpha 实现基线、不可缩减的底线和变更触发条件；
 2. Public/canonical、Pod-derived anchor、Pod assignment annotation、Statement 与 Provider identity probe 有最小接口草案；
-3. `allocate/backfill/preempt/reclaim/gang*/shuffle` 的 hard/soft 行为有支持矩阵，不存在未声明的 bind/dispatch 旁路；
+3. 能产生 assignment 或 Bind 的 `allocate/backfill/nomination` 路径有 hard/soft 行为和 final guard；`preempt/reclaim/gang*/shuffle`
+   只对“不改变 assignment”做旁路审计；
 4. Pod 已绑定后的 anchor 恢复、annotation 缺失/冲突和单 leader 失败行为有反例；
 5. 正反例 fixture 具有稳定 case ID，可被后续单元、API server、Fake Provider 和 E2E 复用；
 6. 尚需社区或真实 backend 证明的内容明确标为评审项，不伪装成已实现事实。
@@ -34,43 +35,34 @@ Group evidence store。
 
 | ID | Alpha 实现基线 | 状态 | owner 角色 | 首个消费者 |
 | --- | --- | --- | --- | --- |
-| D1 catalog 权威载体 | 一份固定内容的 immutable ConfigMap 保存 Alpha catalog；scheduler/controller/webhook/Provider 只读，运行期间不支持修改 | `FrozenForAlpha` | A | XPU-03/04/05 |
-| D2 anchor/assignment 载体 | Alpha 从已绑定 Pod 的 `spec.nodeName` 与受控 XPU assignment annotation 重建 anchor；可选的 PodGroup 摘要只作索引，不作唯一事实源；不引入 `EvidenceStore` | `FrozenForAlpha` | S | XPU-11 |
+| D1 catalog 权威载体 | Alpha 使用随 scheduler/plugin 交付的固定 catalog；其他组件只校验 policy 形状，scheduler 对未知 class fail closed；运行期间不更新 | `FrozenForAlpha` | S | XPU-03/05 |
+| D2 anchor/assignment 载体 | Alpha 从已绑定 Pod 的 `spec.nodeName` 与受控 XPU assignment annotation 重建 anchor；直接扫描成员 Pod，不引入独立持久化记录或摘要状态 | `FrozenForAlpha` | S | XPU-11 |
 | D4 首个 Provider/identity | Alpha 要求 Provider/Device Plugin 能消费或确认 Pod assignment annotation | `ProbePending` | R | XPU-01 |
-| D5 API/schema | V4 `DeviceTopologySpec`；class 为 DNS-1123 label；严格 JSON；固定数量/大小上限；served schema 用 reject-only tombstone 拒绝旧字段 | `FrozenForAlpha` | A | XPU-03/04 |
+| D5 API/schema | V4 `DeviceTopologySpec`；class 为 DNS-1123 label；严格 JSON；只保留实现所需的最小校验；若曾有 served V3 才保留 reject-only 兼容字段 | `FrozenForAlpha` | A | XPU-03/04 |
 | D6 authoring/activity | anchor 建立后禁止 topology policy semantic mutation；复用 PodGroup spec 的现有 resourceVersion/generation 校验，不新增 `ActivityFence` | `FrozenForAlpha` | A/S | XPU-04/11 |
-| D7 激活/action | scheduler/admission 同名 gate + scheduler plugin + 固定 catalog/Provider readiness 共同决定 activation；不能生成 assignment 的 action 对 hard 明确阻断 | `FrozenForAlpha` | S | XPU-02/13/14 |
+| D7 激活/action | gate/plugin 组合和 scheduler 本地 catalog 必须有效；能产生 assignment/Bind 的路径有 hard final guard，其他 action 只做旁路审计 | `FrozenForAlpha` | S | XPU-02/13/14 |
 | D8 组合/状态归属 | 一个 winning Statement 一个最终 placement context；其中可含多个 GroupRef/资源，但每个 Task 只有一份最终 placement，全部约束取交集 | `FrozenForAlpha` | S/R | XPU-08/11/13 |
 
 ## 3. D1：catalog 权威载体
 
 ### 3.1 选择
 
-Alpha 不新增 `ResourceTopologyDescriptor` CRD，也不实现 catalog 动态更新。采用一份固定内容的受控 ConfigMap：
+Alpha 不新增 `ResourceTopologyDescriptor` CRD，也不实现 catalog 动态更新。`ResourceTopologyDescriptor` 只作为规范/内存模型，
+首个 catalog 随 scheduler/plugin 的静态配置或安装包交付，由 scheduler 在启动和配置重载时加载一次。
 
-```text
-volcano-xpu-topology-catalog
-  immutable: true
-  data.catalog.json: 固定、严格的 JSON
-```
+catalog 不是 scheduler、controller、webhook、Provider 之间的共享控制面协议：
 
-部署规则固定为：
+1. scheduler/plugin 是 Alpha catalog 的运行时权威消费者；
+2. controller/webhook 只校验 `scope + domainClass` 的字段形状和 canonical policy，不 watch 或转发 scheduler catalog；
+3. Provider 只在已加载 catalog 的 scheduler 侧把事实规范化到已知 class；
+4. catalog 缺失或非法时 scheduler 对相关 xPU workload fail closed；运行期间不更新，新增/改变 class 另开兼容性评审。
 
-1. 安装时创建唯一的 `volcano-xpu-topology-catalog` ConfigMap；
-2. scheduler、controller、webhook、Provider 读取同一份固定 catalog；
-3. catalog 缺失、内容非法或不符合 Alpha 固定类别表时进入 `CatalogNotReady`；
-4. 运行期间禁止修改 catalog；后续要增加或改变类别，另开设计和兼容性评审，不在本 Alpha 处理。
+### 3.2 交付和失败
 
-ConfigMap 是 Alpha 的固定交付形状。这里的 `ResourceTopologyDescriptor` 是 catalog 的内存/规范模型，不是一个需要在运行期间
-维护版本的 CRD。
-
-### 3.2 权限、保留和失败
-
-- 只有安装/部署身份可创建初始 catalog；运行中的 scheduler/controller/webhook/Provider 只读；
-- catalog ConfigMap 不允许原地 update；删除或缺失时 catalog reader 不 Ready；
-- 固定类别表、resource/scope/class 匹配、JSON 严格性或大小校验失败时，catalog reader 不 Ready；
-- controller/webhook 不可读时拒绝新建/更新带 xPU policy 的 workload；scheduler 只阻塞受影响的 xPU workload；
-- catalog 不放进 `volcano-scheduler.conf`，避免 admission/controller 消费另一份事实。
+- catalog 的具体文件、ConfigMap 或 Helm value 形状由实现阶段决定，不作为跨组件 API 冻结；
+- catalog 必须是严格、只读、可重复加载的单一输入，resource/scope/class 不匹配时整版不可用；
+- scheduler/plugin 不能以另一份 class 定义继续规划；未知 class 对 hard/soft 都是 authoring error 或 Pending；
+- controller/webhook 不可读 scheduler catalog 时不承担“猜测 class”职责，只保留 policy；scheduler 仍须 fail closed。
 
 ### 3.3 为什么不是当前 HyperNode/Node annotation
 
@@ -81,7 +73,7 @@ workload selector 的权威字典，否则同一个 `domainClass` 会被不同�
 
 ### 4.1 Alpha 选择
 
-Alpha 不新增 `EvidenceStore`、Group durable record 或 PodGroup activity status。anchor 复用现有
+Alpha 不新增 Group durable record 或 PodGroup activity status。anchor 复用现有
 HyperNode 的恢复思路：scheduler session 从已经绑定/运行中的 Group 成员 Pod 重建它。
 
 每个已绑定成员提供两类事实：
@@ -107,8 +99,8 @@ volcano.sh/xpu-assignment
 
 `NodeName` 不重复写入 annotation；`deviceKeys` 必须包含能区分 Node replacement 的 canonical identity，不能只写 GPU index。
 单容器整卡 Alpha 不要求把 `ContainerName` 或完整 plan 写入 annotation。
-如需快速检索，可选增加 `localDomainKeys`、`fabricKeys`、`groupRef` 或 `planDigest` 等派生索引字段；这些字段都必须能从
-`NodeName + deviceKeys + 当前 topology snapshot` 重建，缺失、过期或冲突时不能阻止重建，也不能成为第二份权威事实。
+annotation 只保留上述四个字段；Domain/Fabric、GroupRef 和 plan digest 等派生信息由当前 snapshot 和 PodGroup 成员重建，
+不进入 Alpha assignment contract。
 
 Group anchor 是本次 Session 中从这些已绑定成员推导出的内存对象，而不是新的 API 对象：
 
@@ -123,8 +115,7 @@ type PodDerivedGroupAnchor struct {
 }
 ```
 
-`PodGroup` annotation 可以保存一个可解释的 anchor 摘要以便快速索引，但必须能够从成员 Pod 重新计算；摘要丢失或过期时，
-scheduler 重新扫描 Pod，不把摘要当成第二份权威账本。
+Alpha 不写入 `PodGroup` anchor 摘要；恢复时直接扫描成员 Pod，避免引入可过期的重复状态源。
 
 恢复算法固定为：
 
@@ -142,7 +133,7 @@ scheduler leader 负责该调度路径，不设计两个 scheduler 同时更新�
 - 未绑定 Pod 上的同名 annotation 只是用户输入或计划，不能建立 Group anchor；
 - 已绑定 Pod 的 assignment annotation 只有在 scheduler/provider 明确拥有该 key，且 assignment 能通过当前 Node/topology
   facts 校验时，才可作为 Alpha 的恢复事实；
-- PodGroup anchor 摘要、metrics 和 log 都只能作为可重建的索引/诊断信息；
+- metrics 和 log 都只能作为可重建的诊断信息；
 - Alpha 不负责外部设备 reservation、release 或跨系统故障对账；
 - 共享/分数设备、MIG/vGPU、DRA Claim 和多 Container 的 assignment 语义延期，不通过 annotation 猜测。
 
@@ -202,10 +193,10 @@ Plugin 无法消费或确认 scheduler-selected UUID，则结论为 `XPUAssignme
 | `scope` | 必填，且只能是 `Node/Fabric` |
 | `domainClass` | DNS-1123 label，1～63 字节，小写；不是具体 Domain ID |
 | `resourceName` | Kubernetes qualified resource name；必须是扩展资源，不能是 `cpu/memory` |
-| `policies` | 每个 DeviceTopologySpec 最多 16 条；canonical exact duplicate 折叠后再检查 |
+| `policies` | 只要求可解析、可 canonicalize、无冲突；具体数量上限由实现阶段按 API server 与对象大小确定，不冻结为跨组件合同 |
 | `podSelector` | 只允许 PodGroup 级 `applyTo=Pod`；Group/SubGroup policy 禁止 |
-| annotation | key 为 `scheduling.volcano.sh/device-topology`；UTF-8 JSON 最大 16 KiB |
-| catalog | canonical JSON 最大 512 KiB、最多 256 个 descriptor；超限整版拒绝 |
+| annotation | Alpha canonical policy 只来自 PodGroup typed spec；workload annotation ergonomic 路径延期；assignment annotation 另有最小四字段合同 |
+| catalog | 严格、只读、可加载；大小/descriptor 数量只设实现阶段的最小防护，不冻结具体数字 |
 
 同一作用单元中，`resourceName + applyTo + scope + normalized selector` 相同而 `domainClass` 不同是冲突；Alpha 不计算 class 交集，
 也不提供 acceptable-classes 列表。多条不同 scope/resource 的 policy 使用 AND。
@@ -214,9 +205,9 @@ Plugin 无法消费或确认 scheduler-selected UUID，则结论为 `XPUAssignme
 
 - annotation decoder 拒绝未知 apiVersion/字段、重复 JSON key、尾随 token、非 canonical 类型和超限；
 - internal/versioned Go type 均不暴露 `tier/tierName`；
-- served PodGroup/VCJob schema 暂留 reject-only legacy tombstone，并用 CEL 永久要求字段不存在；
-- 必须用真实 API server 测试证明旧字段不是 prune 后被接受；
-- typed field、VCJob、owner/template annotation 和 direct PodGroup 统一调用同一纯 canonicalization 包；
+- 若确认某 served version 曾暴露 V3 `tier/tierName`，该 version 才保留 reject-only legacy tombstone，并用 CEL 拒绝；若没有实际 served 版本，不新增兼容字段；
+- 只有启用 legacy tombstone 的 served version 需要用真实 API server 测试证明旧字段不是 prune 后被接受；
+- Alpha canonicalization 先服务 direct PodGroup typed spec；VCJob、owner/template annotation 等 ergonomic source 延期，不冻结多源统一优先级；
 - `PolicyFingerprint` 只覆盖默认化后的用户 intent；固定 catalog 只提供 class 定义，不参与 workload 版本判断。
 
 共享纯函数的最小边界冻结为：
@@ -255,24 +246,14 @@ Pod 删除后的外部设备生命周期不属于 Alpha；本阶段只根据 Pod
 
 ## 8. D7：激活、reload 和 action 支持矩阵
 
-### 8.1 activation digest
+### 8.1 激活与 fail-closed
 
-digest 至少覆盖：
+Alpha 只冻结本进程的最小组合校验：feature gate 与 `xpu-topology-aware` plugin 必须同时有效，scheduler 本地 catalog 可加载，
+Provider identity/assignment contract 可用；任一条件不满足，scheduler 不调度相关 xPU workload。admission/controller 不读取 scheduler
+运行时配置，不参与跨进程 activation digest 或共享配置同步。
 
-```text
-XPUTopologyAwareScheduling gate value
-accepted schedulerNames（排序）
-xpu-topology-aware plugin arguments/callback enablement
-Provider identity + resource owner identity/capabilities
-fixed catalog readiness
-assignment annotation contract and Provider readiness
-```
-
-scheduler、admission 和 controller 的 accepted schedulerNames 必须一致。任一目标 Pod 的 `spec.schedulerName` 不在这份集合，xPU authoring
-不应被该 Volcano 实例接管；在集合内但 gate/plugin/config 不完整时，带 policy 的对象 fail closed。
-
-首次非法配置不进入 Ready。Alpha 不切换或恢复独立 evidence manager；已绑定 Pod 的 annotation 和 NodeName 是可重新读取的事实。
-feature gate 是进程启动参数，不热更；关闭需要 drain 后统一重启 scheduler/admission。
+feature gate 仍是进程启动参数；Alpha 不定义热更新、统一 drain、跨 replica digest 或 activation 状态机。关闭/切换由发布流程在
+后续验收阶段决定，不能借此把非空 xPU policy 当普通 workload 调度。
 
 ### 8.2 action 支持矩阵
 
@@ -282,13 +263,13 @@ feature gate 是进程启动参数，不热更；关闭需要 drain 后统一重
 | `allocate` hard-network/SubGroup branch | trial/Save/Recover 后 `Statement.Commit()` | 允许，保持现有 network gradient | 允许；merged/recovered winning Statement 必须重新生成并校验 DeviceKeys |
 | nomination fast path | 回到 allocate 的 Statement | 允许 | 允许；最终 placement 必须重新校验，不能沿用失效的 DeviceKeys |
 | `backfill` | 直接 `Session.Allocate()` 并可能 dispatch | 允许 preference | **阻断无法写入 assignment annotation 或无法恢复 Group anchor 的 hard Task** |
-| `preempt/reclaim` | Statement 主要提交 Evict/Pipeline | 允许现有 victim 选择 | 可请求 eviction/pipeline；后续 allocate 重新完整计划 |
-| `gangpreempt/gangreclaim` | domain nomination + Evict/Pipeline Commit | 允许现有网络行为 | 同上；nomination 只是 hint，不是 xPU anchor/assignment |
-| `shuffle` | 直接 `Session.Evict()` | 允许 | 只改变 Pod 生命周期；Pod 删除后由现有 cache/provider 反映下一轮可用性 |
+| `preempt/reclaim` | Statement 主要提交 Evict/Pipeline | 允许现有 victim 选择 | 只审计不产生新 assignment；后续 allocate 重新完整计划 |
+| `gangpreempt/gangreclaim` | domain nomination + Evict/Pipeline Commit | 允许现有网络行为 | 只审计不产生新 assignment；nomination 不是 xPU anchor |
+| `shuffle` | 直接 `Session.Evict()` | 允许 | 只审计 Pod 生命周期；Pod 删除后由现有 cache/provider 反映下一轮可用性 |
 | bind worker | 单项队列、逐 Pod PreBind/Bind | 普通路径不变 | 复用现有逐 Pod PreBind/Bind；每个成功绑定 Pod 必须保留 assignment annotation |
 
-core final guard 必须独立于 plugin callback：任何 hard policy 的新 Allocate 如果无法生成并写入可校验的 assignment annotation，拒绝
-dispatch。这样即使新 action 未来直接调用 `Session.Allocate()`，也不能绕过 Alpha 的身份和 anchor 合同。
+core final guard 必须覆盖会产生新 assignment 或 Bind 的 `allocate/backfill/nomination` 路径：如果无法生成并写入可校验的
+assignment annotation，拒绝 dispatch。preempt/reclaim/gang*/shuffle 不创建 assignment，只保留“不改变 assignment”的审计测试。
 
 ## 9. D8：多个 Group、SubGroup 和 resource 的组合
 
@@ -322,7 +303,7 @@ Alpha:
 
 | 失败点 | 必须动作 | 禁止推断 |
 | --- | --- | --- |
-| assignment annotation 缺失或格式非法 | 不建立该 Pod/Group 的恢复 anchor；hard policy 保持 Pending | 不得从 PodGroup 摘要或 GPU index 猜测 DeviceKey |
+| assignment annotation 缺失或格式非法 | 不建立该 Pod/Group 的恢复 anchor；hard policy 保持 Pending | 不得从 GPU index 猜测 DeviceKey |
 | 已绑定成员的 Node/DeviceKeys 无法映射到当前 topology | Group 保持 Pending，等待事实恢复或人工处理 | 不得选择第二个 Domain/Fabric 规避冲突 |
 | 同一 Group 的已绑定成员 anchor 冲突 | Group 保持 Pending，并记录可重建诊断信息 | 不得覆盖旧成员或把冲突当成新 Group |
 | Node 被同名替换且 NodeUID 不一致 | 拒绝恢复旧 assignment，重新走调度 | 不得仅凭 NodeName 或 GPU index 复用旧 anchor |
@@ -332,14 +313,14 @@ Alpha:
 
 | 合同 | 当前触点 | 后续主责 |
 | --- | --- | --- |
-| gate/plugin/config strict validation | `pkg/features/volcano_features.go`、`pkg/scheduler/{util,scheduler}.go`、`framework/plugins.go` | XPU-02/S |
+| gate/plugin activation guard | `pkg/features/volcano_features.go`、`pkg/scheduler/{util,scheduler}.go` | XPU-02/S |
 | catalog/API/canonicalization | `staging/src/volcano.sh/apis/pkg/apis/{scheduling,batch}/`、生成链 | XPU-03/A+S |
 | authoring/activity | `pkg/controllers/podgroup/pg_controller_handler.go`、job controller、admission、PodGroup status | XPU-04/A |
 | Provider/cache/snapshot | `pkg/scheduler/cache/{cache,event_handlers}.go`、`api/cluster_info.go`、`framework/session.go` | XPU-05/06/S |
 | Group planning | `framework/session_plugins.go`、`actions/allocate/allocate.go`、Job/SubJob | XPU-08/S |
 | Session-local Group plan/Statement | `actions/allocate/{allocate,recorder}.go`、`framework/statement.go` | XPU-09/S |
 | Pod-derived anchor/assignment annotation | `pkg/scheduler/framework/session.go`、`pkg/scheduler/cache/event_handlers.go`、Pod Bind annotation path | XPU-11/S |
-| hard-policy bypass/Pod recovery | allocate/backfill/preempt/reclaim/gang*/shuffle、Pod/Node events | XPU-13/14/S |
+| hard-policy bypass/Pod recovery | allocate/backfill/nomination 的 assignment guard；preempt/reclaim/gang*/shuffle 的不变性审计；Pod/Node events | XPU-13/14/S |
 
 当前事实不能与提议混写：`Statement.Commit()` 仍无 error；`backfill` 直接调用 `Session.Allocate()`；`AddBindTask()` 仍单项入队；
 `executePreBinds()` 会保留成功成员。本文没有改变这些实现。
@@ -377,7 +358,8 @@ backfill.Action.Execute
 ```
 
 因此仅保护 `Statement` 提交不能覆盖 backfill。XPU-02/13 的 core guard 必须在 `Session.Allocate/dispatch` 或更靠近 cache 提交入口再次识别
-hard policy；如果该入口无法产出并保留 assignment annotation，就返回 `XPUTopologyActionNotSupported`。
+hard policy；如果该入口无法产出并保留 assignment annotation，就保持 Pending。preempt/reclaim/gang*/shuffle 不进入同一 guard，
+只验证它们不创建 assignment、不伪造释放事实。
 
 preempt/reclaim/gangpreempt/gangreclaim 的 Statement 主要产生 Evict/Pipeline operations；shuffle 直接 `Session.Evict()`。这些路径只改变
 资源未来可用性。Alpha 不从 eviction、`FutureIdle` 或 Pipeline 推断外部设备释放；Pod 删除和 provider/cache 的正常更新负责反映下一轮可用资源，
@@ -385,15 +367,14 @@ XPU-14 只检查 anchor 恢复与旁路行为。
 
 ## 12. Fixture 规范与可追踪验收
 
-机器可读 fixture 初稿见
-[`testdata/xpu-00-contract-fixtures.yaml`](./testdata/xpu-00-contract-fixtures.yaml)。后续工作包不得复制后改名；应直接引用 case ID，
-并在测试层补充运行环境和断言。
+以下是 XPU-00 的稳定 fixture case ID；实现阶段可将其映射到测试文件，但本合同不冻结 fixture 文件路径或具体序列化格式。
+后续工作包不得复制后改名，应直接引用 case ID，并在测试层补充运行环境和断言。
 
 最低映射：
 
 | fixture | 最先落地 |
 | --- | --- |
-| `canonical-equivalent-order-defaults`、`legacy-tier-rejected`、`unknown-class-authoring-error` | XPU-03/04 |
+| `canonical-equivalent-order-defaults`、`legacy-tier-rejected-if-served`、`unknown-class-authoring-error` | XPU-03/04 |
 | `node-domain-fragmented-6-plus-2`、四种 `applyTo × scope`、`node-and-fabric-and` | XPU-08 |
 | `statement-multiple-subgroups-resources`、`backfill-hard-bypass-blocked` | XPU-09/13 |
 | `bound-pod-anchor-recovery`、`xpu-assignment-annotation-persisted` | XPU-11/13 |
@@ -406,9 +387,9 @@ XPU-14 只检查 anchor 恢复与旁路行为。
 
 XPU-00 可以在以下条件满足后从“实现基线草案”转为“已冻结”：
 
-- API reviewer 接受 D1/D5/D6 的 ConfigMap、schema 和 policy mutation 规则；
+- API/scheduler reviewer 接受 D1/D5/D6 的最小 catalog、schema 和 policy mutation 规则；
 - scheduler/framework reviewer 接受 D2 的 Pod-derived anchor、assignment annotation 与单 leader 边界，并确认 Alpha 不新增事务层；
-- runtime reviewer 接受 D4 的 assignment identity contract，并确认 XPU-01 的 NVIDIA Provider、nvml-mock harness 与真实硬件补验环境；
+- runtime reviewer 接受 D4 的 scheduler-owned assignment identity contract，并确认 XPU-01 的 NVIDIA Provider、nvml-mock harness 与后续真实硬件补验环境；
 - allocate/bind 责任人逐项签核 action 矩阵、Pod annotation 持久路径和旁路行为；
 - 所有 `FrozenForAlpha` 决策均有 owner，所有 `ProbePending` 决策均有对应 XPU-01 证据链接。
 
