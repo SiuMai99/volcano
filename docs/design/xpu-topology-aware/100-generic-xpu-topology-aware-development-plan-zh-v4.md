@@ -5,6 +5,8 @@
 > 状态：待实施计划；任务均未因本文创建而完成。源码核对日期：2026-09-16；本地 HEAD：`7604cc7d3`。
 > 下文“现有”指本地 checkout，“新增/建议”指拟开发内容，不代表上游已经接受。
 >
+> 范围修订（2026-09-20）：原始 Alpha 仍不把 GPU 虚拟化请求形状纳入产品能力；为提前验证 exact UUID 后端，XPU-01 增加一个复用现有 Volcano vGPU/HAMi Adapter 的 L1 证据轨道。该轨道是验证配置，不改变 Alpha 的 vGPU/MIG 支持范围，也不替代后续原生 NVIDIA Device Plugin exact-ID 方案。
+>
 > XPU-00 已启动；合同冻结草案与 fixture 规范见
 > [101-generic-xpu-topology-aware-contract-review-zh-v4.md](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
 
@@ -41,10 +43,11 @@ V4 中的“PR 1”和“PR 3”各自包含多个跨组件改动，本计划将
 包含：Annotation/Mock Provider、Node-local 和显式 Fabric、PodGroup/SubGroup、direct PodGroup canonical authoring、单普通 Container 整卡、
 基于已绑定 Pod 的稳定跨 wave anchor、单 active leader，以及一个 Provider 能否消费/确认 scheduler-selected DeviceKey 的探针。
 
-延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何、多 Container/init 生命周期、topology-aware victim selection、
+延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何作为 Alpha workload API、多 Container/init 生命周期、topology-aware victim selection、
 自动推导 Fabric、通信 ring 优化、外部设备生命周期、多 Pod Bind 原子性、workload 同时启动屏障。
-首个 Provider 的厂商目标固定为 NVIDIA；XPU-01 可用 `nvml-mock` 模拟 NVIDIA inventory/topology/health，并用真实 NVIDIA Device Plugin
-接入 `nvidia.com/gpu`。HAMi 不是底层设备厂商；即使参考其分配/注入实现，也不意味着首期支持 vGPU 请求形状。
+首个 Provider 的厂商目标固定为 NVIDIA；XPU-01 主轨道仍使用 `nvml-mock + NVIDIA Device Plugin` 接入 `nvidia.com/gpu`，并保留 stock
+Device Plugin 的 exact-ID 缺口结论。新增的 vGPU 轨道只复用现有 `volcano-vgpu-device-plugin` 作为 L1 Adapter 证据，使用
+`deviceSplitCount=1` 的最小单槽位验证配置，不表示首期支持 vGPU 请求形状。HAMi 不是底层设备厂商。
 
 ## 2. 源码基线与实际改动面
 
@@ -73,7 +76,7 @@ M0 不是重写设计。输出短决策记录、接口草案与反例用例，�
 | --- | --- | --- |
 | D1：catalog 权威载体 | 固定 Alpha class 定义，使用 scheduler-side 静态配置/安装输入；不冻结跨组件共享读取协议，不实现运行期间更新 | XPU-03、05 |
 | D2：Pod-derived anchor 与 assignment | 复用已绑定 Pod 的 `spec.nodeName` 和 scheduler-owned `volcano.sh/xpu-assignment` 重建 anchor；直接扫描成员 Pod，不引入独立持久化记录或摘要状态 | XPU-11、14 |
-| D4：首个 Provider | 用 XPU-01 的小实验验证：scheduler-selected DeviceKey 能被 Provider/Device Plugin 消费或确认，并能写入/保留 Pod assignment annotation | XPU-01 |
+| D4：首个 Provider | 保持 generic contract：scheduler-selected DeviceKey 能被 Provider/Device Plugin 消费或确认，并能写入/保留 Pod assignment annotation；XPU-01 同时报告 stock 路径缺口和现有 Volcano vGPU Adapter 的 exact UUID 证据，两者不合并 | XPU-01 |
 | D5：API 与 schema | 冻结 class 名语法、默认值、selector 冲突判定和 strict JSON；大小上限与 legacy tombstone 仅在实现/实际 served 版本需要时确定 | XPU-03、04 |
 | D6：authoring 与 anchor activity | 已绑定成员存在时禁止 topology policy semantic mutation；复用 PodGroup 的现有 resourceVersion/generation 更新冲突，不新增 ActivityFence；单 leader 读取一致缓存 | XPU-04、11 |
 | D7：激活与 action 兼容 | 冻结 gate/plugin/catalog fail-closed；只对能产生 assignment/Bind 的 allocate/backfill/nomination 做 guard，其他 action 做不变性审计 | XPU-02、13、14 |
@@ -86,8 +89,12 @@ M0 不是重写设计。输出短决策记录、接口草案与反例用例，�
 
 ### XPU-01：NVIDIA Provider identity 探针
 
-在大规模修改 Statement 前，针对 NVIDIA Provider 完成分层小实验。第一层使用 `nvml-mock + NVIDIA Device Plugin` 做可重复的身份、
-topology 和 annotation 模拟；真实 NVIDIA 节点只作为后续发布验收的可选补充，不作为 Alpha 合同前置：
+在大规模修改 Statement 前，针对 NVIDIA Provider 完成分层小实验。XPU-01 分成两个互不混淆的 L1 轨道：
+
+1. **Stock 轨道**：`nvml-mock + NVIDIA Device Plugin + nvidia.com/gpu`，验证原生接口的能力边界；如果只能得到数量、`GetPreferredAllocation` 或 kubelet 最终 ID，selected UUID 结论必须是 `XPUAssignmentNotEnforceable`。
+2. **VGPU Adapter 轨道**：`nvml-mock + volcano-vgpu-device-plugin + Volcano deviceshare`，验证已有 vGPU/HAMi 路径能否把 UUID allowlist 传到 `vgpu-ids-new` 和 `NVIDIA_VISIBLE_DEVICES`。该轨道使用 `deviceSplitCount=1`、`volcano.sh/vgpu-number=1` 的单槽位验证配置；它证明的是现有 Adapter 的 exact UUID realization，不是 stock Device Plugin，也不是 Alpha 的 vGPU 产品支持。
+
+真实 NVIDIA 节点只作为后续发布验收的可选补充，不作为 Alpha 合同前置：
 
 1. 从 nvml-mock 枚举稳定 NVIDIA GPU UUID，选择非默认 UUID，验证 Provider 能将 canonical DeviceKey 传递到 Pod assignment annotation。
 2. mock 层核对 NVML/Device Plugin inventory、plan 与 annotation；真实硬件层再从实际容器/NVIDIA runtime 读出设备身份，与 Pod 的
@@ -96,7 +103,10 @@ topology 和 annotation 模拟；真实 NVIDIA 节点只作为后续发布验收
 4. 注入 annotation 缺失、非法、重复 DeviceKey、topology 映射冲突，验证不会猜测或建立第二个 anchor。
 5. 明确 nvml-mock 能覆盖的 Fabric/topology/health 故障与真实 NVIDIA Fabric 验收边界。
 
-产物是 NVIDIA Provider 能力表、mock/真实分层日志与断言、尚缺的协议和硬件清单。nvml-mock 能证明身份和拓扑映射行为，不能替代真实
+6. 在 VGPU Adapter 轨道中同时记录 `volcano.sh/vgpu-use-gpuuuid`、`volcano.sh/vgpu-ids-new`、`volcano.sh/devices-to-allocate` 和
+   容器内 `NVIDIA_VISIBLE_DEVICES`；明确该 allowlist 是当前 vGPU 案例的用户输入，不等同于 generic scheduler-owned `DeviceKey`。
+
+产物是 NVIDIA Provider 能力表、stock/vGPU 分轨日志与断言、尚缺的协议和硬件清单。nvml-mock 能证明身份和拓扑映射行为，不能替代真实
 容器 UUID 验收；真实层未运行时记录为未验证，不阻塞 Alpha。Provider 不能消费 scheduler-selected DeviceKey 时，Alpha 对相关 hard workload 保持 Pending。
 
 ## 4. 依赖、工作包和估算
@@ -150,7 +160,8 @@ flowchart TB
 | ID | 工作包 / 建议 PR 主题 | 依赖 | 主责 | 人日 |
 | --- | --- | --- | --- | --- |
 | XPU-00 | [冻结 API、Pod-derived anchor、assignment 与验收合同](./101-generic-xpu-topology-aware-contract-review-zh-v4.md) | 无 | A/S/R | 4～6 |
-| XPU-01 | Provider identity/selected DeviceKey 探针与硬件验收方案 | 00 的初版合同；结果反哺 D4 | R | 3～5 |
+| XPU-01 | Provider identity/selected DeviceKey 探针与硬件验收方案；包含 stock negative case 和现有 vGPU Adapter L1 evidence | 00 的初版合同；结果反哺 D4 | R/Q | 3～5 |
+| XPU-01B | 后续 native NVIDIA exact allocation bridge 设计：scheduler-owned assignment、Provider 校验、kubelet `DevicesIds` 对账和 runtime reconciliation | XPU-01 stock gap；不属于当前 vGPU 验证实施 | S/R | 后续单独估算 |
 | XPU-02 | Feature/plugin activation guard、process manager 骨架 | 00/D7 | S | 4～6 |
 | XPU-03 | PodGroup Public API、scheduler-side catalog、canonical types 与生成链 | 00/D1/D5 | A/S | 6～9 |
 | XPU-04 | direct PodGroup canonicalization、mutation、Condition 聚合 | 02、03；D6 | A | 6～9 |

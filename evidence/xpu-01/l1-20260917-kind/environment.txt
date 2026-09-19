@@ -1,0 +1,33 @@
+collectedAtUTC=2026-09-17T08:16:11Z
+repositoryCommit=d38831ab74af85fa67dee5647e37a6460b9ef16b
+repositoryBranch=docs/xpu-topology-aware-scheduling-contract-review
+goVersion=go version go1.26.5 darwin/arm64
+kindVersion=kind v0.32.0 go1.26.3 darwin/arm64
+kubectlClientVersion:
+Client Version: v1.33.9
+Kustomize Version: v5.6.0
+clusterVersion:
+Client Version: v1.33.9
+Kustomize Version: v5.6.0
+Server Version: v1.33.12
+nodes:
+NAME                            STATUS   ROLES           AGE   VERSION    INTERNAL-IP    EXTERNAL-IP   OS-IMAGE                       KERNEL-VERSION                        CONTAINER-RUNTIME
+volcano-gpu-mvp-control-plane   Ready    control-plane   54m   v1.33.12   192.168.97.2   <none>        Debian GNU/Linux 13 (trixie)   7.0.14-orbstack-00380-ga7e0a2dc9535   containerd://2.3.1
+volcano-gpu-mvp-worker          Ready    <none>          54m   v1.33.12   192.168.97.4   <none>        Debian GNU/Linux 13 (trixie)   7.0.14-orbstack-00380-ga7e0a2dc9535   containerd://2.3.1
+volcano-gpu-mvp-worker2         Ready    <none>          54m   v1.33.12   192.168.97.5   <none>        Debian GNU/Linux 13 (trixie)   7.0.14-orbstack-00380-ga7e0a2dc9535   containerd://2.3.1
+volcano-gpu-mvp-worker3         Ready    <none>          54m   v1.33.12   192.168.97.3   <none>        Debian GNU/Linux 13 (trixie)   7.0.14-orbstack-00380-ga7e0a2dc9535   containerd://2.3.1
+nvmlMockPods:
+NAME                        READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+nvml-h100-nvml-mock-slx9m   1/1     Running   0          49m   10.244.2.4   volcano-gpu-mvp-worker    <none>           <none>
+nvml-l40s-nvml-mock-hrmxz   1/1     Running   0          49m   10.244.1.2   volcano-gpu-mvp-worker2   <none>           <none>
+nvml-t4-nvml-mock-f98bh     1/1     Running   0          49m   10.244.3.2   volcano-gpu-mvp-worker3   <none>           <none>
+devicePluginPods:
+NAMESPACE     NAME                              READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+kube-system   nvidia-device-plugin-mock-646hf   1/1     Running   0          48m   10.244.1.3   volcano-gpu-mvp-worker2   <none>           <none>
+kube-system   nvidia-device-plugin-mock-d2xl6   1/1     Running   0          48m   10.244.2.5   volcano-gpu-mvp-worker    <none>           <none>
+kube-system   nvidia-device-plugin-mock-tsql4   1/1     Running   0          48m   10.244.3.3   volcano-gpu-mvp-worker3   <none>           <none>
+volcanoPods:
+NAME                                   READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+volcano-admission-5d89db5b4-lg9lc      1/1     Running   0          47m   10.244.3.4   volcano-gpu-mvp-worker3   <none>           <none>
+volcano-controllers-79fb54b884-knbwn   1/1     Running   0          47m   10.244.1.4   volcano-gpu-mvp-worker2   <none>           <none>
+volcano-scheduler-7c5d8fb645-c8xrc     1/1     Running   0          47m   10.244.2.7   volcano-gpu-mvp-worker    <none>           <none>

@@ -1,0 +1,9 @@
+{
+  "caseID": "nvidia-nvml-mock-selected-uuid-idempotent",
+  "evidenceLevel": "L1",
+  "status": "Fail",
+  "reason": "XPUAssignmentNotEnforceable",
+  "details": [
+    "provider did not confirm the scheduler-selected DeviceID"
+  ]
+}

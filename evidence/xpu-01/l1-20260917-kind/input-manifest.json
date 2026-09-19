@@ -1,0 +1,137 @@
+{
+  "caseID": "nvidia-nvml-mock-selected-uuid-idempotent",
+  "evidenceLevel": "L1",
+  "contract": {
+    "vendor": "NVIDIA",
+    "providerID": "nvidia-nvml-v1",
+    "namespace": "nvidia.com",
+    "resourceName": "nvidia.com/gpu",
+    "discoveryAPI": "NVML"
+  },
+  "nodeName": "volcano-gpu-mvp-worker",
+  "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+  "devices": [
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000000",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000001",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000002",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000003",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000004",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000005",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000006",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+      "deviceID": "GPU-01000100-0000-0000-0000-000000000007",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000000",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000001",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000002",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000003",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000004",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000005",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000006",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "7d203e5e-f939-48ff-b719-bed0b0839627",
+      "deviceID": "GPU-14050000-0000-0000-0000-000000000007",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker3",
+      "nodeUID": "b4862554-6768-4158-ad10-af15c31b39cb",
+      "deviceID": "GPU-00000074-0000-0000-0000-000000000000",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker3",
+      "nodeUID": "b4862554-6768-4158-ad10-af15c31b39cb",
+      "deviceID": "GPU-00000074-0000-0000-0000-000000000001",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker3",
+      "nodeUID": "b4862554-6768-4158-ad10-af15c31b39cb",
+      "deviceID": "GPU-00000074-0000-0000-0000-000000000002",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker3",
+      "nodeUID": "b4862554-6768-4158-ad10-af15c31b39cb",
+      "deviceID": "GPU-00000074-0000-0000-0000-000000000003",
+      "healthy": true
+    }
+  ],
+  "selectedDeviceID": "GPU-01000100-0000-0000-0000-000000000001",
+  "providerCanConfirmSelected": false
+}

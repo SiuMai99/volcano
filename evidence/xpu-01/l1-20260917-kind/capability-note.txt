@@ -1,0 +1,2 @@
+providerCanConfirmSelected=false is intentional: the stock NVIDIA Device Plugin path exposes capacity and Allocate, but has no scheduler-selected UUID confirmation channel.
+The resulting XPUAssignmentNotEnforceable is a compatibility-gap observation, not a mock inventory failure.

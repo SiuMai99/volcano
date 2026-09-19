@@ -1,0 +1,22 @@
+{
+  "caseID": "nvidia-nvml-mock-selected-uuid-idempotent",
+  "evidenceLevel": "L1",
+  "status": "Pass",
+  "providerAdapter": "mock-nvidia-nvml-exact",
+  "selectedDeviceKey": "a9de0849-181a-45e5-aa17-b08aef62c817/GPU-01000100-0000-0000-0000-000000000001",
+  "assignmentAnnotationKey": "volcano.sh/xpu-assignment",
+  "assignmentAnnotationValue": "{\"version\":1,\"resourceName\":\"nvidia.com/gpu\",\"provider\":\"nvidia-nvml-v1\",\"deviceKeys\":[\"a9de0849-181a-45e5-aa17-b08aef62c817/GPU-01000100-0000-0000-0000-000000000001\"]}",
+  "assignment": {
+    "version": 1,
+    "resourceName": "nvidia.com/gpu",
+    "provider": "nvidia-nvml-v1",
+    "deviceKeys": [
+      "a9de0849-181a-45e5-aa17-b08aef62c817/GPU-01000100-0000-0000-0000-000000000001"
+    ]
+  },
+  "details": [
+    "scheduler-selected DeviceKey was passed to the Provider without re-selection",
+    "mock NVIDIA Provider confirmed exact NodeUID and DeviceID membership and health",
+    "Adapter emitted the minimum volcano.sh/xpu-assignment value and verified round-trip parsing"
+  ]
+}

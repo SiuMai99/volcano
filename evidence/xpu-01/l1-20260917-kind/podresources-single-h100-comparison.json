@@ -1,0 +1,16 @@
+{
+  "podName": "single-h100",
+  "namespace": "gpu-mvp",
+  "containerName": "worker",
+  "resourceName": "nvidia.com/gpu",
+  "podUID": "24dd6368-74f8-48ce-a56d-33fee158a42d",
+  "nodeName": "volcano-gpu-mvp-worker",
+  "nodeUID": "a9de0849-181a-45e5-aa17-b08aef62c817",
+  "expectedSelectedDeviceID": "GPU-01000100-0000-0000-0000-000000000001",
+  "actualDeviceIDs": [
+    "GPU-01000100-0000-0000-0000-000000000000"
+  ],
+  "actualDeviceCount": 1,
+  "actualIDsBelongToNodeInventory": true,
+  "actualIDsEqualExpectedSelectedID": false
+}

@@ -1,0 +1,9 @@
+{
+  "podName": "single-h100",
+  "namespace": "gpu-mvp",
+  "containerName": "worker",
+  "resourceName": "nvidia.com/gpu",
+  "deviceIDs": [
+    "GPU-01000100-0000-0000-0000-000000000000"
+  ]
+}

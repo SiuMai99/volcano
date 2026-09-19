@@ -1,0 +1,35 @@
+{
+  "caseID": "nvidia-nvml-mock-selected-uuid-idempotent",
+  "evidenceLevel": "L0",
+  "contract": {
+    "vendor": "NVIDIA",
+    "providerID": "nvidia-nvml-v1",
+    "namespace": "nvidia.com",
+    "resourceName": "nvidia.com/gpu",
+    "discoveryAPI": "NVML"
+  },
+  "nodeName": "volcano-gpu-mvp-worker",
+  "nodeUID": "node-uid-a",
+  "devices": [
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "node-uid-a",
+      "deviceID": "GPU-aaaaaaaa",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker",
+      "nodeUID": "node-uid-a",
+      "deviceID": "GPU-bbbbbbbb",
+      "healthy": true
+    },
+    {
+      "nodeName": "volcano-gpu-mvp-worker2",
+      "nodeUID": "node-uid-b",
+      "deviceID": "GPU-aaaaaaaa",
+      "healthy": true
+    }
+  ],
+  "selectedDeviceID": "gpu-bbbbbbbb",
+  "providerCanConfirmSelected": true
+}
