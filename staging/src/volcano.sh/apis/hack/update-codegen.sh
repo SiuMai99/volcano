@@ -30,6 +30,13 @@ kube::codegen::gen_helpers \
     --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
     "${SCRIPT_ROOT}/pkg/apis"
 
+kube::codegen::gen_openapi \
+    --output-dir "${SCRIPT_ROOT}/pkg/apis/openapi" \
+    --output-pkg "${THIS_PKG}/pkg/apis/openapi" \
+    --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+    --report-filename "${SCRIPT_ROOT}/hack/api_violations.report" \
+    "${SCRIPT_ROOT}/pkg/apis"
+
 kube::codegen::gen_client \
     --with-watch \
     --with-applyconfig \

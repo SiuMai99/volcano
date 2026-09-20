@@ -169,6 +169,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &schedulingv1beta1.AffinityApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("Cluster"):
 		return &schedulingv1beta1.ClusterApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("DeviceTopologyDomainSelector"):
+		return &schedulingv1beta1.DeviceTopologyDomainSelectorApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("DeviceTopologyPolicy"):
+		return &schedulingv1beta1.DeviceTopologyPolicyApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("DeviceTopologySpec"):
+		return &schedulingv1beta1.DeviceTopologySpecApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("Guarantee"):
 		return &schedulingv1beta1.GuaranteeApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("NetworkTopologySpec"):

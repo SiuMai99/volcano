@@ -199,6 +199,10 @@ type PodGroupSpec struct {
 	// +optional
 	NetworkTopology *NetworkTopologySpec `json:"networkTopology,omitempty" protobuf:"bytes,6,opt,name=networkTopology"`
 
+	// DeviceTopology defines device topology scheduling intent for this PodGroup.
+	// +optional
+	DeviceTopology *DeviceTopologySpec `json:"deviceTopology,omitempty" protobuf:"bytes,8,opt,name=deviceTopology"`
+
 	// SubGroupPolicy provides secondary grouping capability for Pods within a PodGroup, supporting subgroup-level Gang scheduling and network topology affinity scheduling.
 	// 1. Supports dividing Pods in a PodGroup into multiple subgroups as required;
 	// 2. Supports configuring subgroup-level Gang scheduling (e.g., scheduling is allowed only when resource requirements of at least N subgroups are satisfied);
@@ -217,6 +221,10 @@ type SubGroupPolicySpec struct {
 	// NetworkTopology defines the NetworkTopology config, this field works in conjunction with network topology feature and hyperNode CRD.
 	// +optional
 	NetworkTopology *NetworkTopologySpec `json:"networkTopology,omitempty" protobuf:"bytes,2,opt,name=networkTopology"`
+
+	// DeviceTopology defines device topology scheduling intent for this SubGroupPolicy.
+	// +optional
+	DeviceTopology *DeviceTopologySpec `json:"deviceTopology,omitempty" protobuf:"bytes,8,opt,name=deviceTopology"`
 
 	// SubGroupSize defines the number of pods in each sub-affinity group.
 	// Only when a subGroup of pods, with a size of "subGroupSize", can satisfy the network topology constraint then will the subGroup be scheduled.
@@ -273,6 +281,62 @@ type NetworkTopologySpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
 	HighestTierName string `json:"highestTierName,omitempty" protobuf:"bytes,3,opt,name=highestTierName"`
+}
+
+// DeviceTopologyMode represents how strictly a device topology policy is applied.
+type DeviceTopologyMode string
+
+const (
+	// HardDeviceTopologyMode represents a strict device topology constraint.
+	HardDeviceTopologyMode DeviceTopologyMode = "hard"
+
+	// SoftDeviceTopologyMode represents a device topology preference.
+	SoftDeviceTopologyMode DeviceTopologyMode = "soft"
+)
+
+// DeviceTopologyApplyTo identifies the scheduling unit affected by a device topology policy.
+type DeviceTopologyApplyTo string
+
+const (
+	// DeviceTopologyApplyToPod applies a policy independently to each selected Pod.
+	DeviceTopologyApplyToPod DeviceTopologyApplyTo = "Pod"
+
+	// DeviceTopologyApplyToGroup applies a policy jointly to a PodGroup or SubGroup.
+	DeviceTopologyApplyToGroup DeviceTopologyApplyTo = "Group"
+)
+
+// DeviceTopologyDomainScope identifies the ownership scope of a device topology domain.
+type DeviceTopologyDomainScope string
+
+const (
+	// DeviceTopologyDomainScopeNode identifies a node-local domain.
+	DeviceTopologyDomainScopeNode DeviceTopologyDomainScope = "Node"
+
+	// DeviceTopologyDomainScopeFabric identifies a provider-declared fabric domain.
+	DeviceTopologyDomainScopeFabric DeviceTopologyDomainScope = "Fabric"
+)
+
+// DeviceTopologyDomainClass is the stable catalog name of a device topology domain class.
+type DeviceTopologyDomainClass string
+
+// DeviceTopologyDomainSelector selects a catalog-defined class of topology domains.
+type DeviceTopologyDomainSelector struct {
+	Scope       DeviceTopologyDomainScope `json:"scope" protobuf:"bytes,1,opt,name=scope"`
+	DomainClass DeviceTopologyDomainClass `json:"domainClass" protobuf:"bytes,2,opt,name=domainClass"`
+}
+
+// DeviceTopologyPolicy describes device topology intent for one extended resource.
+type DeviceTopologyPolicy struct {
+	ResourceName v1.ResourceName              `json:"resourceName" protobuf:"bytes,1,opt,name=resourceName"`
+	ApplyTo      DeviceTopologyApplyTo        `json:"applyTo,omitempty" protobuf:"bytes,2,opt,name=applyTo"`
+	Mode         DeviceTopologyMode           `json:"mode,omitempty" protobuf:"bytes,3,opt,name=mode"`
+	Domain       DeviceTopologyDomainSelector `json:"domain" protobuf:"bytes,4,opt,name=domain"`
+	PodSelector  *metav1.LabelSelector        `json:"podSelector,omitempty" protobuf:"bytes,5,opt,name=podSelector"`
+}
+
+// DeviceTopologySpec contains device topology policies for a PodGroup or SubGroupPolicy.
+type DeviceTopologySpec struct {
+	Policies []DeviceTopologyPolicy `json:"policies,omitempty" protobuf:"bytes,1,rep,name=policies"`
 }
 
 // PodGroupStatus represents the current state of a pod group.

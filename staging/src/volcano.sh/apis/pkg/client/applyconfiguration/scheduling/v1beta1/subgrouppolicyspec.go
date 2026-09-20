@@ -28,6 +28,8 @@ type SubGroupPolicySpecApplyConfiguration struct {
 	Name *string `json:"name,omitempty"`
 	// NetworkTopology defines the NetworkTopology config, this field works in conjunction with network topology feature and hyperNode CRD.
 	NetworkTopology *NetworkTopologySpecApplyConfiguration `json:"networkTopology,omitempty"`
+	// DeviceTopology defines device topology scheduling intent for this SubGroupPolicy.
+	DeviceTopology *DeviceTopologySpecApplyConfiguration `json:"deviceTopology,omitempty"`
 	// SubGroupSize defines the number of pods in each sub-affinity group.
 	// Only when a subGroup of pods, with a size of "subGroupSize", can satisfy the network topology constraint then will the subGroup be scheduled.
 	SubGroupSize *int32 `json:"subGroupSize,omitempty"`
@@ -65,6 +67,14 @@ func (b *SubGroupPolicySpecApplyConfiguration) WithName(value string) *SubGroupP
 // If called multiple times, the NetworkTopology field is set to the value of the last call.
 func (b *SubGroupPolicySpecApplyConfiguration) WithNetworkTopology(value *NetworkTopologySpecApplyConfiguration) *SubGroupPolicySpecApplyConfiguration {
 	b.NetworkTopology = value
+	return b
+}
+
+// WithDeviceTopology sets the DeviceTopology field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DeviceTopology field is set to the value of the last call.
+func (b *SubGroupPolicySpecApplyConfiguration) WithDeviceTopology(value *DeviceTopologySpecApplyConfiguration) *SubGroupPolicySpecApplyConfiguration {
+	b.DeviceTopology = value
 	return b
 }
 

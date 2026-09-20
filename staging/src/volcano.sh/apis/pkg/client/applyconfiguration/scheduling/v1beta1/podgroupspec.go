@@ -52,6 +52,8 @@ type PodGroupSpecApplyConfiguration struct {
 	MinResources *v1.ResourceList `json:"minResources,omitempty"`
 	// NetworkTopology defines the NetworkTopology config, this field works in conjunction with network topology feature and hyperNode CRD.
 	NetworkTopology *NetworkTopologySpecApplyConfiguration `json:"networkTopology,omitempty"`
+	// DeviceTopology defines device topology scheduling intent for this PodGroup.
+	DeviceTopology *DeviceTopologySpecApplyConfiguration `json:"deviceTopology,omitempty"`
 	// Compared with minTaskMember, it offers more comprehensive topology scheduling and Gang scheduling management capabilities.
 	// Concurrent use with minTaskMember is not recommended, and SubGroupPolicy is the long-term evolution direction.
 	SubGroupPolicy []SubGroupPolicySpecApplyConfiguration `json:"subGroupPolicy,omitempty"`
@@ -114,6 +116,14 @@ func (b *PodGroupSpecApplyConfiguration) WithMinResources(value v1.ResourceList)
 // If called multiple times, the NetworkTopology field is set to the value of the last call.
 func (b *PodGroupSpecApplyConfiguration) WithNetworkTopology(value *NetworkTopologySpecApplyConfiguration) *PodGroupSpecApplyConfiguration {
 	b.NetworkTopology = value
+	return b
+}
+
+// WithDeviceTopology sets the DeviceTopology field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DeviceTopology field is set to the value of the last call.
+func (b *PodGroupSpecApplyConfiguration) WithDeviceTopology(value *DeviceTopologySpecApplyConfiguration) *PodGroupSpecApplyConfiguration {
+	b.DeviceTopology = value
 	return b
 }
 
