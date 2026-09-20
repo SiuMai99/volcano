@@ -43,6 +43,7 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/gate"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 )
 
 // Scheduler represents a "Volcano Scheduler".
@@ -246,6 +247,29 @@ func (pc *Scheduler) configureXPUTopology(tiers []conf.Tier) {
 	manager := pc.cache.XPUTopologyManager()
 	if err := manager.Configure(XPUTopologyActivationConfig(tiers)); err != nil {
 		klog.Errorf("xPU topology activation is not reloadable: %v", err)
+		return
+	}
+	if manager.CatalogConfigured() {
+		return
+	}
+
+	path, configured := XPUTopologyCatalogPath(tiers)
+	if !configured {
+		if err := manager.ConfigureCatalog(nil); err != nil {
+			klog.Errorf("xPU topology catalog is not reloadable: %v", err)
+		}
+		return
+	}
+	catalog, err := topology.LoadCatalogFile(path)
+	if err != nil {
+		klog.Errorf("failed to load xPU topology catalog %q: %v", path, err)
+		if configureErr := manager.ConfigureCatalog(nil); configureErr != nil {
+			klog.Errorf("xPU topology catalog is not reloadable: %v", configureErr)
+		}
+		return
+	}
+	if err := manager.ConfigureCatalog(catalog); err != nil {
+		klog.Errorf("xPU topology catalog is not reloadable: %v", err)
 	}
 }
 

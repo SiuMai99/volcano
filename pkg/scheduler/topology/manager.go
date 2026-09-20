@@ -51,6 +51,10 @@ var (
 	// ErrManagerStopped prevents a stopped process manager from being started
 	// again as if it were a new process.
 	ErrManagerStopped = errors.New("xpu topology manager has been stopped")
+	// ErrCatalogConfigurationChanged prevents a running scheduler from
+	// replacing its fixed Alpha catalog. A changed catalog requires a process
+	// restart, not a scheduler-config reload.
+	ErrCatalogConfigurationChanged = errors.New("xpu topology catalog has already been configured; restart required")
 )
 
 // ActivationConfig contains static process configuration. Runtime readiness
@@ -155,6 +159,9 @@ type ProcessManager interface {
 	Configure(ActivationConfig) error
 	SetReadiness(Readiness)
 	Activation() Activation
+	ConfigureCatalog(*Catalog) error
+	CatalogConfigured() bool
+	Catalog() *Catalog
 }
 
 // Manager owns one process-scoped lifecycle and activation state.
@@ -167,6 +174,9 @@ type Manager struct {
 	configured bool
 	identity   string
 	activation Activation
+
+	catalogConfigured bool
+	catalog           *Catalog
 }
 
 var _ ProcessManager = (*Manager)(nil)
@@ -221,9 +231,49 @@ func (m *Manager) Configure(config ActivationConfig) error {
 func (m *Manager) SetReadiness(readiness Readiness) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.activation.CatalogReady = readiness.CatalogReady
+	// Once a static catalog has been configured, a runtime readiness publisher
+	// cannot replace its authoritative load result with a boolean. This keeps a
+	// missing/invalid catalog fail-closed and a valid catalog fixed until restart.
+	if m.catalogConfigured {
+		m.activation.CatalogReady = m.catalog != nil
+	} else {
+		m.activation.CatalogReady = readiness.CatalogReady
+	}
 	m.activation.ProviderReady = readiness.ProviderReady
 	m.activation.AssignmentContractReady = readiness.AssignmentContractReady
+}
+
+// ConfigureCatalog installs the fixed catalog once for this process manager.
+// A nil value records a failed/missing initial load and remains fail-closed;
+// a later file appearance must be handled by restarting the scheduler rather
+// than silently changing catalog authority during a process lifetime.
+func (m *Manager) ConfigureCatalog(catalog *Catalog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.catalogConfigured {
+		return ErrCatalogConfigurationChanged
+	}
+	m.catalogConfigured = true
+	m.catalog = catalog
+	m.activation.CatalogReady = catalog != nil
+	return nil
+}
+
+// CatalogConfigured reports whether the static catalog load was attempted.
+// Scheduler config reloads use it to avoid re-reading a catalog file.
+func (m *Manager) CatalogConfigured() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.catalogConfigured
+}
+
+// Catalog returns the fixed immutable catalog selected during initial process
+// activation. Catalog itself returns copies of any descriptor data it exposes.
+func (m *Manager) Catalog() *Catalog {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.catalog
 }
 
 // Start starts the process lifecycle at most once.

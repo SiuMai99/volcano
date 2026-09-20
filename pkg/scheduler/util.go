@@ -87,6 +87,21 @@ func XPUTopologyActivationConfig(tiers []conf.Tier) topology.ActivationConfig {
 	}
 }
 
+// XPUTopologyCatalogPath returns the only static catalog source accepted by
+// the Alpha plugin configuration. Ambiguous duplicate plugin options are not
+// resolved by choosing an arbitrary catalog and therefore remain fail-closed.
+func XPUTopologyCatalogPath(tiers []conf.Tier) (string, bool) {
+	options := xputopologyaware.PluginOptions(tiers)
+	if len(options) != 1 {
+		return "", false
+	}
+	config := xputopologyaware.ConfigFromPluginOption(options[0])
+	if !config.Valid() || !config.CatalogPresent {
+		return "", false
+	}
+	return config.CatalogPath, true
+}
+
 func UnmarshalSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, []conf.Configuration, map[string]string, error) {
 	var actions []framework.Action
 

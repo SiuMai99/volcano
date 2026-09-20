@@ -85,6 +85,27 @@ func TestXPUTopologyPluginDetectionDoesNotInferFromGate(t *testing.T) {
 	}
 }
 
+func TestXPUTopologyCatalogPathRequiresOneValidConfiguredPlugin(t *testing.T) {
+	valid := []conf.Tier{{Plugins: []conf.PluginOption{{
+		Name: xputopologyaware.PluginName,
+		Arguments: map[string]interface{}{
+			xputopologyaware.ProviderArgument:    xputopologyaware.AnnotationProvider,
+			xputopologyaware.CatalogPathArgument: "/etc/volcano/catalog.json",
+		},
+	}}}}
+	if got, ok := XPUTopologyCatalogPath(valid); !ok || got != "/etc/volcano/catalog.json" {
+		t.Fatalf("XPUTopologyCatalogPath(valid) = %q, %v", got, ok)
+	}
+	if _, ok := XPUTopologyCatalogPath(nil); ok {
+		t.Fatal("empty plugin configuration must not select a catalog")
+	}
+	duplicate := append([]conf.Tier(nil), valid...)
+	duplicate[0].Plugins = append(duplicate[0].Plugins, valid[0].Plugins[0])
+	if _, ok := XPUTopologyCatalogPath(duplicate); ok {
+		t.Fatal("ambiguous duplicate plugin options must not select a catalog")
+	}
+}
+
 func TestLoadSchedulerConf(t *testing.T) {
 	configuration := `
 actions: "enqueue, allocate, backfill"

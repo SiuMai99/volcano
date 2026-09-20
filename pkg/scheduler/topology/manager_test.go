@@ -18,6 +18,7 @@ package topology
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,44 @@ func TestManagerRejectsStaticConfigurationReload(t *testing.T) {
 	}
 	if got := manager.Activation().Reason(); got != ActivationRestartRequired {
 		t.Fatalf("Reason() after reload = %q, want %q", got, ActivationRestartRequired)
+	}
+}
+
+func TestManagerConfiguresCatalogOnce(t *testing.T) {
+	first, err := LoadCatalog(strings.NewReader(`{
+"resources":[{"resourceName":"nvidia.com/gpu","domainClasses":[{"scope":"Node","name":"local-scale-up"}]}]
+}`))
+	if err != nil {
+		t.Fatalf("LoadCatalog(first) error = %v", err)
+	}
+	second, err := LoadCatalog(strings.NewReader(`{
+"resources":[{"resourceName":"nvidia.com/gpu","domainClasses":[{"scope":"Fabric","name":"scale-up-fabric"}]}]
+}`))
+	if err != nil {
+		t.Fatalf("LoadCatalog(second) error = %v", err)
+	}
+
+	manager := NewManager()
+	if err := manager.Configure(ActivationConfig{GateEnabled: true, PluginConfigured: true, PluginConfigReady: true, ConfigurationIdentity: "annotation:/catalog.json"}); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if err := manager.ConfigureCatalog(first); err != nil {
+		t.Fatalf("ConfigureCatalog(first) error = %v", err)
+	}
+	if !manager.CatalogConfigured() || manager.Catalog() != first {
+		t.Fatal("manager did not preserve the first fixed catalog")
+	}
+	if got := manager.Activation().Reason(); got != ProviderNotReady {
+		t.Fatalf("Reason() with catalog = %q, want %q", got, ProviderNotReady)
+	}
+	manager.SetReadiness(Readiness{CatalogReady: false, ProviderReady: true})
+	if !manager.Activation().CatalogReady {
+		t.Fatal("runtime readiness must not clear an already configured catalog")
+	}
+	if err := manager.ConfigureCatalog(second); !errors.Is(err, ErrCatalogConfigurationChanged) {
+		t.Fatalf("ConfigureCatalog(second) error = %v, want %v", err, ErrCatalogConfigurationChanged)
+	}
+	if manager.Catalog() != first {
+		t.Fatal("second catalog replaced the fixed first catalog")
 	}
 }
