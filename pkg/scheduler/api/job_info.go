@@ -416,9 +416,15 @@ type JobInfo struct {
 
 	AllocatedHyperNode string
 	NetworkTopology    *scheduling.NetworkTopologySpec
-	SubJobs            map[SubJobID]*SubJobInfo
-	TaskToSubJob       map[TaskID]SubJobID
-	MinSubJobs         map[SubJobGID]int32 // key is name of "PodGroup.Spec.SubGroupPolicy", value is minSubGroups
+	// DeviceTopology is the canonical PodGroup-level xPU policy. It is derived
+	// only from PodGroup.Spec.DeviceTopology; source-specific workload metadata
+	// never participates in scheduler policy construction.
+	DeviceTopology            CanonicalDeviceTopologySpec
+	DeviceTopologyFingerprint PolicyFingerprint
+	DeviceTopologyValid       bool
+	SubJobs                   map[SubJobID]*SubJobInfo
+	TaskToSubJob              map[TaskID]SubJobID
+	MinSubJobs                map[SubJobGID]int32 // key is name of "PodGroup.Spec.SubGroupPolicy", value is minSubGroups
 
 	// All tasks of the Job.
 	TaskStatusIndex       map[TaskStatus]TasksMap
@@ -459,7 +465,6 @@ func NewJobInfo(uid JobID, tasks ...*TaskInfo) *JobInfo {
 		TaskToSubJob:     map[TaskID]SubJobID{},
 		MinSubJobs:       map[SubJobGID]int32{},
 	}
-
 	for _, task := range tasks {
 		job.AddTaskInfo(task)
 	}
@@ -478,6 +483,7 @@ func cloneNetworkTopology(spec *scheduling.NetworkTopologySpec) *scheduling.Netw
 func (ji *JobInfo) UnsetPodGroup() {
 	ji.PodGroup = nil
 	ji.NetworkTopology = nil
+	ji.setDeviceTopology(nil)
 
 	clear(ji.SubJobs)
 	for _, task := range ji.Tasks {
@@ -516,11 +522,19 @@ func (ji *JobInfo) SetPodGroup(pg *PodGroup) {
 	ji.ParseMinMemberInfo(pg)
 
 	oldPG := ji.PodGroup
+	oldDeviceTopology := ji.DeviceTopology
+	oldDeviceTopologyFingerprint := ji.DeviceTopologyFingerprint
+	oldDeviceTopologyValid := ji.DeviceTopologyValid
 	ji.PgUID = pg.UID
 	ji.PodGroup = pg
 	ji.NetworkTopology = cloneNetworkTopology(pg.Spec.NetworkTopology)
+	ji.setDeviceTopology(pg.Spec.DeviceTopology)
 
-	if oldPG == nil || !equality.Semantic.DeepEqual(oldPG.Spec.SubGroupPolicy, pg.Spec.SubGroupPolicy) {
+	if oldPG == nil ||
+		!equality.Semantic.DeepEqual(oldPG.Spec.SubGroupPolicy, pg.Spec.SubGroupPolicy) ||
+		!oldDeviceTopology.Equal(ji.DeviceTopology) ||
+		oldDeviceTopologyFingerprint != ji.DeviceTopologyFingerprint ||
+		oldDeviceTopologyValid != ji.DeviceTopologyValid {
 		clear(ji.SubJobs)
 		for _, task := range ji.Tasks {
 			ji.addTaskToSubJob(task)
@@ -535,6 +549,19 @@ func (ji *JobInfo) SetPodGroup(pg *PodGroup) {
 			}
 		}
 	}
+}
+
+func (ji *JobInfo) setDeviceTopology(spec *scheduling.DeviceTopologySpec) {
+	if spec == nil || len(spec.Policies) == 0 {
+		ji.DeviceTopology = CanonicalDeviceTopologySpec{}
+		ji.DeviceTopologyFingerprint = ""
+		ji.DeviceTopologyValid = false
+		return
+	}
+	canonical, fingerprint, errs := CanonicalizeInternalDeviceTopologyForAuthoring(spec, PodGroupAuthoringSource)
+	ji.DeviceTopology = canonical
+	ji.DeviceTopologyFingerprint = fingerprint
+	ji.DeviceTopologyValid = len(errs) == 0
 }
 
 // extractWaitingTime reads sla waiting time for job from podgroup annotations
@@ -791,11 +818,14 @@ func (ji *JobInfo) Clone() *JobInfo {
 			return nil
 		}(),
 
-		AllocatedHyperNode: ji.AllocatedHyperNode,
-		NetworkTopology:    cloneNetworkTopology(ji.NetworkTopology),
-		SubJobs:            map[SubJobID]*SubJobInfo{},
-		TaskToSubJob:       map[TaskID]SubJobID{},
-		MinSubJobs:         maps.Clone(ji.MinSubJobs),
+		AllocatedHyperNode:        ji.AllocatedHyperNode,
+		NetworkTopology:           cloneNetworkTopology(ji.NetworkTopology),
+		DeviceTopology:            cloneCanonicalDeviceTopologySpec(ji.DeviceTopology),
+		DeviceTopologyFingerprint: ji.DeviceTopologyFingerprint,
+		DeviceTopologyValid:       ji.DeviceTopologyValid,
+		SubJobs:                   map[SubJobID]*SubJobInfo{},
+		TaskToSubJob:              map[TaskID]SubJobID{},
+		MinSubJobs:                maps.Clone(ji.MinSubJobs),
 	}
 
 	ji.CreationTimestamp.DeepCopyInto(&info.CreationTimestamp)

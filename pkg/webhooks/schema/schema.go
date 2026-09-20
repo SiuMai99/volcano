@@ -17,7 +17,10 @@ limitations under the License.
 package schema
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	v1 "k8s.io/api/core/v1"
@@ -150,6 +153,116 @@ func DecodePodGroup(object runtime.RawExtension, resource metav1.GroupVersionRes
 	}
 
 	return &podgroup, nil
+}
+
+// DecodePodGroupStrict decodes the raw AdmissionRequest payload without
+// allowing the lossy "last duplicate key wins" behavior of encoding/json.
+// PodGroup device-topology authoring relies on this raw-object check: a
+// decoded Go struct alone cannot tell whether an unknown field, duplicate key,
+// or wrong JSON type was pruned before policy validation ran.
+func DecodePodGroupStrict(object runtime.RawExtension, resource metav1.GroupVersionResource) (*schedulingv1beta1.PodGroup, error) {
+	podgroupResource := metav1.GroupVersionResource{
+		Group:    schedulingv1beta1.SchemeGroupVersion.Group,
+		Version:  schedulingv1beta1.SchemeGroupVersion.Version,
+		Resource: "podgroups",
+	}
+	if resource != podgroupResource {
+		return nil, fmt.Errorf("expect resource to be %s", podgroupResource)
+	}
+	if err := rejectDuplicateJSONKeys(object.Raw); err != nil {
+		return nil, fmt.Errorf("strict PodGroup decode: %w", err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(object.Raw))
+	decoder.DisallowUnknownFields()
+	podgroup := schedulingv1beta1.PodGroup{}
+	if err := decoder.Decode(&podgroup); err != nil {
+		return nil, fmt.Errorf("strict PodGroup decode: %w", err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return nil, fmt.Errorf("strict PodGroup decode: %w", err)
+	}
+	return &podgroup, nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := scanJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("contains trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func scanJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		keys := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("object key is not a string")
+			}
+			if _, duplicate := keys[key]; duplicate {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			keys[key] = struct{}{}
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim('}') {
+			return fmt.Errorf("expected end of object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if end != json.Delim(']') {
+			return fmt.Errorf("expected end of array")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	return nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return fmt.Errorf("contains trailing JSON value")
 }
 
 // DecodeHyperNode decodes the hypernode using deserializer from the raw object.

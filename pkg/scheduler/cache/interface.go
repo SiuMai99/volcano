@@ -128,7 +128,7 @@ type Evictor interface {
 // StatusUpdater updates pod with given PodCondition
 type StatusUpdater interface {
 	UpdatePodStatus(pod *v1.Pod) (*v1.Pod, error)
-	UpdatePodGroup(pg *api.PodGroup) (*api.PodGroup, error)
+	UpdatePodGroup(pg *api.PodGroup, updateAnnotations bool) (*api.PodGroup, error)
 	UpdateQueueStatus(queue *api.QueueInfo) error
 	UpdateNodeShardStatus(nodeshard *nodeshardv1alpha1.NodeShard) (*nodeshardv1alpha1.NodeShard, error)
 }

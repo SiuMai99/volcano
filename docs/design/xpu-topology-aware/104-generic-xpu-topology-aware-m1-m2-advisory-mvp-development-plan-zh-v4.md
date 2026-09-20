@@ -252,13 +252,13 @@ codegen/manifests 更新，不手工维护一套旁路定义。
 
 - `pkg/webhooks/admission/podgroups/validate`：从 CREATE 扩展到 UPDATE，解码 old/new object；
 - admission raw-object strict decoding 覆盖未知字段、重复 JSON key 和非法类型；不能只依赖已经解码后的 Go struct；
-- webhook-manager 增加按 PodGroup annotation 索引的 Pod lister，活动判断直接读取成员 Pod 的非空 `spec.nodeName`；不新增 Activity CRD、PodGroup anchor summary 或第二权威源；
-- 没有已绑定成员时允许 semantic update；已有绑定成员时仅允许 fingerprint 相同的 no-op；删除 policy 同样是 semantic update；
+- webhook-manager 不为 policy update 增加 Pod lister、活动索引或第二权威源；admission 只校验新 persisted typed spec 的 API 形状与同 spec 冲突；
+- semantic update（包括删除）允许提交并只影响未来未调度 Pod；已 Bound/Running Pod 不重调度，也不因 policy 变更创建 recovery/anchor 状态；
 - `JobInfo.SetPodGroup/UnsetPodGroup/Clone` 保存 canonical policy/fingerprint，并在顶层或 SubGroup policy 变化时重建/失效对应 SubJob view；
 - scheduler compiler 重新校验被 policy 命中的 Task 请求形状；M1/M2 只接受单普通 Container、正整数扩展资源且 request=limit，
   multi-container/init-container、共享/小数资源明确返回 unsupported；
-- 复用 PodGroup Condition，保留 authoring blocker 优先级；动态 scheduler reason 不能覆盖未解决的
-  `XPUTopologyPolicyConflict/XPUTopologyPolicyMutationForbidden`；
+- 复用 PodGroup Condition，保留 authoring conflict blocker 优先级；动态 scheduler reason 不能覆盖未解决的
+  `XPUTopologyPolicyConflict`；
 - direct PodGroup 之外的来源不创建 topology policy。
 
 M1/M2 不要求 controller 读取 scheduler catalog。admission 只校验 API 形状和同一 spec 内冲突；class 是否存在由 scheduler 使用固定
@@ -266,7 +266,7 @@ catalog 判断。
 
 **测试**：
 
-- CREATE/UPDATE、canonical no-op、活动期修改/删除、无活动成员更新；
+- CREATE/UPDATE、canonical no-op、semantic mutation/删除可持久化并更新 future-Pod view；
 - 顶层 policy 变化触发 compiled view/SubJob 失效；
 - blocker status conflict retry，不覆盖其他 condition；
 - canonical spec 为空但 blocker=True 时仍 fail closed；
@@ -435,7 +435,7 @@ DeviceID、PodUID 或高基数 Domain/Fabric ID。
 | M1-06 | Node replacement | 同名新 UID 为 Pending，旧 facts/assignment 不继承 |
 | M1-07 | Fabric authority | 单 owner 完整声明；member/owner 变化失效；HyperNode 不推导 Fabric |
 | M1-08 | paired snapshot | 不出现新 Node/旧 UID topology；旧 Session immutable |
-| M1-09 | policy update | canonical no-op 可接受；活动期 semantic mutation/删除拒绝 |
+| M1-09 | policy update | canonical no-op、semantic mutation 和删除均可持久化；仅未来未调度 Pod 使用新 policy |
 
 ### 8.2 M2 必须通过
 

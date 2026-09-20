@@ -146,6 +146,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=podgroups,shortName=pg;podgroup-v1beta1
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="STATUS",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="minMember",type=integer,JSONPath=`.spec.minMember`
 // +kubebuilder:printcolumn:name="RUNNINGS",type=integer,JSONPath=`.status.running`

@@ -366,15 +366,43 @@ func (su *defaultStatusUpdater) UpdatePodStatus(pod *v1.Pod) (*v1.Pod, error) {
 	return su.kubeclient.CoreV1().Pods(pod.Namespace).UpdateStatus(context.TODO(), pod, metav1.UpdateOptions{})
 }
 
-// UpdatePodGroup will Update PodGroup
-func (su *defaultStatusUpdater) UpdatePodGroup(pg *schedulingapi.PodGroup) (*schedulingapi.PodGroup, error) {
+// UpdatePodGroup updates PodGroup status through the status subresource. When
+// the scheduler also changed its existing allocation annotation, that narrow
+// metadata write is made first. Each retry re-reads the latest object so an
+// authoring controller's condition cannot be lost to a stale Session view.
+func (su *defaultStatusUpdater) UpdatePodGroup(pg *schedulingapi.PodGroup, updateAnnotations bool) (*schedulingapi.PodGroup, error) {
 	podgroup := &vcv1beta1.PodGroup{}
 	if err := schedulingscheme.Scheme.Convert(&pg.PodGroup, podgroup, nil); err != nil {
 		klog.Errorf("Error while converting PodGroup to v1alpha1.PodGroup with error: %v", err)
 		return nil, err
 	}
 
-	updated, err := su.vcclient.SchedulingV1beta1().PodGroups(podgroup.Namespace).Update(context.TODO(), podgroup, metav1.UpdateOptions{})
+	var updated *vcv1beta1.PodGroup
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := su.vcclient.SchedulingV1beta1().PodGroups(podgroup.Namespace).Get(context.TODO(), podgroup.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		if updateAnnotations {
+			if current.Annotations == nil {
+				current.Annotations = map[string]string{}
+			}
+			if value, found := podgroup.Annotations[schedulingapi.JobAllocatedHyperNode]; found {
+				current.Annotations[schedulingapi.JobAllocatedHyperNode] = value
+			} else {
+				delete(current.Annotations, schedulingapi.JobAllocatedHyperNode)
+			}
+			current, err = su.vcclient.SchedulingV1beta1().PodGroups(current.Namespace).Update(context.TODO(), current, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+		}
+
+		current.Status = schedulingapi.MergePodGroupStatusV1beta1(current.Status, podgroup.Status)
+		updated, err = su.vcclient.SchedulingV1beta1().PodGroups(current.Namespace).UpdateStatus(context.TODO(), current, metav1.UpdateOptions{})
+		return err
+	})
 	if err != nil {
 		klog.Errorf("Error while updating PodGroup with error: %v", err)
 		return nil, err
@@ -1734,7 +1762,7 @@ func (sc *SchedulerCache) UpdateJobStatus(job *schedulingapi.JobInfo, updatePGSt
 		if updatePGAnnotations {
 			sc.updateJobAnnotations(job)
 		}
-		pg, err := sc.StatusUpdater.UpdatePodGroup(job.PodGroup)
+		pg, err := sc.StatusUpdater.UpdatePodGroup(job.PodGroup, updatePGAnnotations)
 		if err != nil {
 			return nil, err
 		}

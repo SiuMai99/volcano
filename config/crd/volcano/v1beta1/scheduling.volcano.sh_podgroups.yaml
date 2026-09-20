@@ -36,7 +36,8 @@ spec:
     - podgroup-v1beta1
     singular: podgroup
   scope: Namespaced
-  subresources: {}
+  subresources:
+    status: {}
   validation:
     openAPIV3Schema:
       description: PodGroup is a collection of Pod; used for batch workload.

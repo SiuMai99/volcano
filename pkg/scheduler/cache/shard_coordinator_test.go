@@ -43,7 +43,7 @@ func (c *countingStatusUpdater) UpdatePodStatus(pod *v1.Pod) (*v1.Pod, error) {
 	return pod, nil
 }
 
-func (c *countingStatusUpdater) UpdatePodGroup(pg *api.PodGroup) (*api.PodGroup, error) {
+func (c *countingStatusUpdater) UpdatePodGroup(pg *api.PodGroup, _ bool) (*api.PodGroup, error) {
 	return pg, nil
 }
 

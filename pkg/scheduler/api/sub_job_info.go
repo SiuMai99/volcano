@@ -58,6 +58,11 @@ type SubJobInfo struct {
 	NominatedHyperNode string
 
 	NetworkTopology *scheduling.NetworkTopologySpec
+	// DeviceTopology is the canonical policy attached to this SubGroupPolicy.
+	// It is rebuilt whenever JobInfo invalidates its SubJob view.
+	DeviceTopology            CanonicalDeviceTopologySpec
+	DeviceTopologyFingerprint PolicyFingerprint
+	DeviceTopologyValid       bool
 }
 
 func NewSubJobInfo(gid SubJobGID, uid SubJobID, job JobID, policy *scheduling.SubGroupPolicySpec, matchValues []string) *SubJobInfo {
@@ -77,6 +82,7 @@ func NewSubJobInfo(gid SubJobGID, uid SubJobID, job JobID, policy *scheduling.Su
 		if policy.NetworkTopology != nil {
 			sji.NetworkTopology = policy.NetworkTopology.DeepCopy()
 		}
+		sji.setDeviceTopology(policy.DeviceTopology)
 	}
 	if len(matchValues) > 0 {
 		if v, err := strconv.Atoi(matchValues[0]); err == nil {
@@ -84,6 +90,19 @@ func NewSubJobInfo(gid SubJobGID, uid SubJobID, job JobID, policy *scheduling.Su
 		}
 	}
 	return sji
+}
+
+func (sji *SubJobInfo) setDeviceTopology(spec *scheduling.DeviceTopologySpec) {
+	if spec == nil || len(spec.Policies) == 0 {
+		sji.DeviceTopology = CanonicalDeviceTopologySpec{}
+		sji.DeviceTopologyFingerprint = ""
+		sji.DeviceTopologyValid = false
+		return
+	}
+	canonical, fingerprint, errs := CanonicalizeInternalDeviceTopologyForAuthoring(spec, SubGroupAuthoringSource)
+	sji.DeviceTopology = canonical
+	sji.DeviceTopologyFingerprint = fingerprint
+	sji.DeviceTopologyValid = len(errs) == 0
 }
 
 // IsHardTopologyMode return whether the subJob's network topology mode is hard and also return the highest allowed tier

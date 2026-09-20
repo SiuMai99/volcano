@@ -637,7 +637,7 @@ func jobStatus(ssn *Session, jobInfo *api.JobInfo) scheduling.PodGroupStatus {
 	for _, c := range status.Conditions {
 		if c.Type == scheduling.PodGroupUnschedulableType &&
 			c.Status == v1.ConditionTrue &&
-			c.TransitionID == string(ssn.UID) {
+			(c.TransitionID == string(ssn.UID) || api.IsXPUTopologyAuthoringBlocker(c)) {
 			unschedulable = true
 			break
 		}
@@ -936,20 +936,10 @@ func (ssn *Session) UpdatePodGroupCondition(jobInfo *api.JobInfo, cond *scheduli
 		return fmt.Errorf("failed to find job <%s/%s>", jobInfo.Namespace, jobInfo.Name)
 	}
 
-	index := -1
-	for i, c := range job.PodGroup.Status.Conditions {
-		if c.Type == cond.Type {
-			index = i
-			break
-		}
-	}
-
-	// Update condition to the new condition.
-	if index < 0 {
-		job.PodGroup.Status.Conditions = append(job.PodGroup.Status.Conditions, *cond)
-	} else {
-		job.PodGroup.Status.Conditions[index] = *cond
-	}
+	// Dynamic scheduling outcomes share the existing Unschedulable condition
+	// type with xPU authoring blockers. Preserve a blocker until its owning
+	// controller explicitly writes False/XPUTopologyResolved.
+	job.PodGroup.Status.Conditions = api.MergePodGroupConditions(job.PodGroup.Status.Conditions, []scheduling.PodGroupCondition{*cond})
 
 	return nil
 }
