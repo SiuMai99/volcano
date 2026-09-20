@@ -46,6 +46,7 @@ import (
 	tasktopology "volcano.sh/volcano/pkg/scheduler/plugins/task-topology"
 	"volcano.sh/volcano/pkg/scheduler/plugins/tdm"
 	"volcano.sh/volcano/pkg/scheduler/plugins/usage"
+	xputopologyaware "volcano.sh/volcano/pkg/scheduler/plugins/xpu-topology-aware"
 )
 
 func init() {
@@ -70,6 +71,7 @@ func init() {
 	framework.RegisterPluginBuilder(pdb.PluginName, pdb.New)
 	framework.RegisterPluginBuilder(nodegroup.PluginName, nodegroup.New)
 	framework.RegisterPluginBuilder(networktopologyaware.PluginName, networktopologyaware.New)
+	framework.RegisterPluginBuilder(xputopologyaware.PluginName, xputopologyaware.New)
 
 	// Plugins for Queues
 	framework.RegisterPluginBuilder(proportion.PluginName, proportion.New)

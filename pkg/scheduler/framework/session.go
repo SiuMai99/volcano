@@ -52,6 +52,7 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/gate"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 	"volcano.sh/volcano/pkg/scheduler/util"
 )
 
@@ -84,6 +85,10 @@ type Session struct {
 	// schGateManager is the scheduler gate manager, passed in from the Scheduler.
 	// Nil when SchedulingGatesQueueAdmission feature gate is disabled.
 	schGateManager *gate.SchGateManager
+
+	// xpuTopologyManager is a process-scoped handle obtained from the cache.
+	// Session plugins may observe it but never own its lifecycle.
+	xpuTopologyManager topology.ProcessManager
 
 	Jobs           map[api.JobID]*api.JobInfo
 	Nodes          map[string]*api.NodeInfo
@@ -229,6 +234,7 @@ func openSession(cache cache.Cache) *Session {
 	}
 
 	snapshot := cache.Snapshot()
+	ssn.xpuTopologyManager = cache.XPUTopologyManager()
 	taskCountsByQueue := make(map[api.QueueID]map[string]int, len(snapshot.Queues))
 
 	ssn.Jobs = snapshot.Jobs
@@ -1006,6 +1012,13 @@ func (ssn *Session) RecordPodGroupEvent(podGroup *api.PodGroup, eventType, reaso
 // SharedDRAManager returns the shared DRAManager from cache
 func (ssn *Session) SharedDRAManager() fwk.SharedDRAManager {
 	return ssn.cache.SharedDRAManager()
+}
+
+// XPUTopologyManager returns the process-scoped xPU manager for this Session.
+// It is a lifecycle observation seam for the activation skeleton; topology
+// views and scheduler callbacks are added by later PRs.
+func (ssn *Session) XPUTopologyManager() topology.ProcessManager {
+	return ssn.xpuTopologyManager
 }
 
 // GetMetricsConf returns the metrics server related configuration from cache

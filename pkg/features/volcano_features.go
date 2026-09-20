@@ -53,6 +53,12 @@ const (
 	// capacity, preventing cluster autoscalers from triggering unnecessary
 	// scale-ups for pods that are simply waiting for queue admission.
 	SchedulingGatesQueueAdmission featuregate.Feature = "SchedulingGatesQueueAdmission"
+
+	// XPUTopologyAwareScheduling enables the generic xPU topology-aware
+	// scheduling path. The gate is intentionally disabled by default; a
+	// scheduler plugin entry is also required before the process-scoped xPU
+	// manager can be activated.
+	XPUTopologyAwareScheduling featuregate.Feature = "XPUTopologyAwareScheduling"
 )
 
 func init() {
@@ -70,4 +76,5 @@ var defaultVolcanoFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec
 	ResourceTopology:              {Default: true, PreRelease: featuregate.Alpha},
 	CronVolcanoJobSupport:         {Default: true, PreRelease: featuregate.Alpha},
 	SchedulingGatesQueueAdmission: {Default: false, PreRelease: featuregate.Alpha},
+	XPUTopologyAwareScheduling:    {Default: false, PreRelease: featuregate.Alpha},
 }

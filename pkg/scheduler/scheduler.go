@@ -96,6 +96,7 @@ func NewScheduler(config *rest.Config, opt *options.ServerOption) (*Scheduler, e
 // initializes the cache, and begins the scheduling process.
 func (pc *Scheduler) Run(stopCh <-chan struct{}) {
 	pc.loadSchedulerConf()
+	pc.startXPUTopologyManager(stopCh)
 
 	// Start the gate manager (if the feature gate is enabled).
 	if utilfeature.DefaultFeatureGate.Enabled(features.SchedulingGatesQueueAdmission) {
@@ -117,6 +118,29 @@ func (pc *Scheduler) Run(stopCh <-chan struct{}) {
 		pc.dumper.ListenForSignal(stopCh)
 	}
 	go runSchedulerSocket()
+}
+
+// startXPUTopologyManager owns the process-scoped lifecycle. The manager is
+// not started for either half-disabled activation, and a Session plugin never
+// starts or stops it.
+func (pc *Scheduler) startXPUTopologyManager(stopCh <-chan struct{}) {
+	if pc.cache == nil {
+		return
+	}
+	manager := pc.cache.XPUTopologyManager()
+	activation := manager.Activation()
+	if !activation.CanStartManager() {
+		klog.V(2).InfoS("xPU topology manager is not started", "reason", activation.Reason())
+		return
+	}
+	if err := manager.Start(); err != nil {
+		klog.Errorf("failed to start xPU topology manager: %v", err)
+		return
+	}
+	go func() {
+		<-stopCh
+		manager.Stop()
+	}()
 }
 
 // runOnce executes a single scheduling cycle. This function is called periodically
@@ -208,7 +232,21 @@ func (pc *Scheduler) loadSchedulerConf() {
 	pc.configurations = configurations
 	pc.metricsConf = metricsConf
 	pc.mutex.Unlock()
+	pc.configureXPUTopology(plugins)
 	logLoadedSchedulerConf(config)
+}
+
+// configureXPUTopology passes only static scheduler configuration to the
+// process-scoped manager. A later reload that changes activation identity is
+// rejected by the manager and therefore fails closed until process restart.
+func (pc *Scheduler) configureXPUTopology(tiers []conf.Tier) {
+	if pc.cache == nil {
+		return
+	}
+	manager := pc.cache.XPUTopologyManager()
+	if err := manager.Configure(XPUTopologyActivationConfig(tiers)); err != nil {
+		klog.Errorf("xPU topology activation is not reloadable: %v", err)
+	}
 }
 
 func (pc *Scheduler) watchSchedulerConf(stopCh <-chan struct{}) {

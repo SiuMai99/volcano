@@ -34,6 +34,7 @@ import (
 	nodeshardv1alpha1 "volcano.sh/apis/pkg/apis/shard/v1alpha1"
 	vcclient "volcano.sh/apis/pkg/client/clientset/versioned"
 	"volcano.sh/volcano/pkg/scheduler/api"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 )
 
 // Cache collects pods/nodes/queues information
@@ -96,6 +97,11 @@ type Cache interface {
 
 	// SharedDRAManager returns the shared DRAManager
 	SharedDRAManager() fwk.SharedDRAManager
+
+	// XPUTopologyManager returns the process-scoped xPU topology manager. The
+	// manager is owned by the cache/scheduler process and is not started or
+	// stopped by a Session plugin.
+	XPUTopologyManager() topology.ProcessManager
 
 	// IsJobTerminated returns if the job was terminated
 	IsJobTerminated(jobId api.JobID) bool

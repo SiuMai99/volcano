@@ -75,6 +75,7 @@ import (
 	schedulingapi "volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
 	"volcano.sh/volcano/pkg/scheduler/metrics/source"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 	schedulercache "volcano.sh/volcano/pkg/schedulercommon/cache"
 	"volcano.sh/volcano/pkg/util"
 )
@@ -190,12 +191,27 @@ type SchedulerCache struct {
 	// sharedDRAManager is used in DRA plugin, contains resourceClaimTracker, resourceSliceLister and deviceClassLister
 	sharedDRAManager fwk.SharedDRAManager
 
+	// xpuTopologyManager is process-scoped. The sync.Once also keeps test-built
+	// SchedulerCache literals safe without introducing a package-global manager.
+	xpuTopologyManager     topology.ProcessManager
+	xpuTopologyManagerOnce sync.Once
+
 	shardUpdateCoordinator *ShardUpdateCoordinator
 
 	// timeout on waiting for handlers handle initial resource synchronization before starting scheduling, 0 will skip waiting
 	resourceSyncTimeout time.Duration
 	// resourceClaimCache is a cache for ResourceClaims, used for DRA
 	resourceClaimCache *assumecache.AssumeCache
+}
+
+// XPUTopologyManager returns the single process-scoped manager owned by this
+// SchedulerCache. It has no startup side effect; Scheduler.Run decides whether
+// the activation matrix permits Start.
+func (sc *SchedulerCache) XPUTopologyManager() topology.ProcessManager {
+	sc.xpuTopologyManagerOnce.Do(func() {
+		sc.xpuTopologyManager = topology.NewManager()
+	})
+	return sc.xpuTopologyManager
 }
 
 type multiSchedulerInfo struct {

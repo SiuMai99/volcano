@@ -24,10 +24,66 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 
+	"volcano.sh/volcano/pkg/features"
 	_ "volcano.sh/volcano/pkg/scheduler/actions"
 	"volcano.sh/volcano/pkg/scheduler/conf"
+	xputopologyaware "volcano.sh/volcano/pkg/scheduler/plugins/xpu-topology-aware"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 )
+
+func TestXPUTopologyActivationConfig(t *testing.T) {
+	tiers := []conf.Tier{{Plugins: []conf.PluginOption{{
+		Name: xputopologyaware.PluginName,
+		Arguments: map[string]interface{}{
+			xputopologyaware.ProviderArgument:    xputopologyaware.AnnotationProvider,
+			xputopologyaware.CatalogPathArgument: "/etc/volcano/xpu-catalog.json",
+		},
+	}}}}
+
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.XPUTopologyAwareScheduling, false)
+	config := XPUTopologyActivationConfig(tiers)
+	if config.GateEnabled {
+		t.Fatal("activation config must observe a disabled feature gate")
+	}
+	if !config.PluginConfigured || !config.PluginConfigReady {
+		t.Fatalf("activation config = %#v, want a valid configured plugin", config)
+	}
+
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.XPUTopologyAwareScheduling, true)
+	config = XPUTopologyActivationConfig(tiers)
+	if !config.GateEnabled || !config.PluginConfigured || !config.PluginConfigReady {
+		t.Fatalf("activation config = %#v, want gate/plugin enabled", config)
+	}
+	if config.CatalogReady || config.ProviderReady || config.AssignmentContractReady {
+		t.Fatalf("skeleton must not claim runtime readiness: %#v", config)
+	}
+
+	invalid := tiers
+	invalid[0].Plugins[0].Arguments[xputopologyaware.ProviderArgument] = "unsupported"
+	config = XPUTopologyActivationConfig(invalid)
+	if config.PluginConfigReady {
+		t.Fatal("invalid Provider identity must fail activation")
+	}
+}
+
+func TestXPUTopologyPluginDetectionDoesNotInferFromGate(t *testing.T) {
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.XPUTopologyAwareScheduling, true)
+	if XPUTopologyPluginConfigured(nil) {
+		t.Fatal("an enabled gate must not imply plugin configuration")
+	}
+	config := XPUTopologyActivationConfig(nil)
+	activation := topology.Activation{
+		GateEnabled:       config.GateEnabled,
+		PluginConfigured:  config.PluginConfigured,
+		PluginConfigReady: config.PluginConfigReady,
+	}
+	if got := activation.Reason(); got != topology.PluginDisabled {
+		t.Fatalf("Reason() = %q, want %q", got, topology.PluginDisabled)
+	}
+}
 
 func TestLoadSchedulerConf(t *testing.T) {
 	configuration := `

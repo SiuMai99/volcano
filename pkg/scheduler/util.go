@@ -29,9 +29,14 @@ import (
 
 	"gopkg.in/yaml.v2"
 
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+
+	"volcano.sh/volcano/pkg/features"
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/plugins"
+	xputopologyaware "volcano.sh/volcano/pkg/scheduler/plugins/xpu-topology-aware"
+	"volcano.sh/volcano/pkg/scheduler/topology"
 	"volcano.sh/volcano/pkg/util"
 )
 
@@ -49,6 +54,38 @@ tiers:
   - name: proportion
   - name: nodeorder
 `
+
+// XPUTopologyPluginConfigured reports whether the scheduler configuration
+// explicitly opts in to the xPU plugin. It intentionally does not infer
+// activation from the feature gate.
+func XPUTopologyPluginConfigured(tiers []conf.Tier) bool {
+	return len(xputopologyaware.PluginOptions(tiers)) > 0
+}
+
+// XPUTopologyActivationConfig builds the static activation state used by the
+// process manager. Catalog and Provider runtime readiness remain false until
+// their dedicated PRs publish it; this prevents the skeleton from claiming a
+// topology capability it does not implement.
+func XPUTopologyActivationConfig(tiers []conf.Tier) topology.ActivationConfig {
+	options := xputopologyaware.PluginOptions(tiers)
+	pluginConfigReady := len(options) > 0
+	for _, option := range options {
+		if !xputopologyaware.ConfigFromPluginOption(option).Valid() {
+			pluginConfigReady = false
+			break
+		}
+	}
+
+	return topology.ActivationConfig{
+		GateEnabled:             utilfeature.DefaultFeatureGate.Enabled(features.XPUTopologyAwareScheduling),
+		PluginConfigured:        len(options) > 0,
+		PluginConfigReady:       pluginConfigReady,
+		ConfigurationIdentity:   xputopologyaware.ConfigIdentity(options),
+		CatalogReady:            false,
+		ProviderReady:           false,
+		AssignmentContractReady: false,
+	}
+}
 
 func UnmarshalSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, []conf.Configuration, map[string]string, error) {
 	var actions []framework.Action

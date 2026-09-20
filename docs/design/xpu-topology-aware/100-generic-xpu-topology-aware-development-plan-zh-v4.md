@@ -193,6 +193,9 @@ M2 所需 XPU-00～07 约 **39～59 人日**，其中包含提前执行的 Provi
 
 ## 5. M1/M2：先完成可运行的 Advisory 路径
 
+详细实施顺序、PR 拆分和验收门槛见
+[104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md](./104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md)。
+
 ### XPU-02：激活与进程生命周期
 
 **落点**：现有 `pkg/features/volcano_features.go`、`pkg/scheduler/{util,scheduler}.go`、

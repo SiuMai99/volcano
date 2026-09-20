@@ -200,7 +200,7 @@ controller/schema path 必须始终保留已持久化 intent，不能因为本�
 
 ~~~mermaid
 flowchart LR
-    FG[Feature gate] --> V[Activation validator]
+    FG[Feature gate] --> V[Activation guard]
     PC[Scheduler tiers plugin entry] --> V
     V -->|invalid| NR[Startup not Ready]
     V -->|valid| TM[Process-scoped topology manager]
@@ -1637,7 +1637,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 ### 11.1 PR 0：API 与最小 framework contract review
 
 - 冻结 `XPUTopologyAwareScheduling` gate、`xpu-topology-aware` plugin 名、双重启用/禁用和 fail-closed 合同；
-- 冻结最小 plugin arguments、严格 validator、process manager 与 per-Session plugin 的生命周期边界；不冻结 reload/drain 状态机；
+- 冻结最小 plugin arguments、`New` 参数解析、activation guard、process manager 与 per-Session plugin 的生命周期边界；不冻结 reload/drain 状态机；
 - 冻结 `DeviceTopologySpec` 的 hard/soft、applyTo、scope/domainClass，并明确拒绝 `tier/tierName`；
 - 确定 scheduler-side `ResourceTopologyDescriptor` catalog 的固定语义；不冻结跨组件共享读取协议；
 - 明确 Public API 无 allocationStrategy；
@@ -1647,7 +1647,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 ### 11.2 PR 1：canonical model、Provider 和 identity
 
-- 注册默认关闭的 Alpha feature gate、plugin builder/config validator 和 Helm scheduler/admission gate 配置；
+- 注册默认关闭的 Alpha feature gate、plugin builder、scheduler/policy activation guard 和 Helm scheduler/admission gate 配置；
 - 实现 gate/plugin 组合校验、存量 typed-policy guard 和 scheduler-side catalog readiness；不实现 activation digest；
 - 建立 process-scoped topology manager；plugin `New/OnSessionOpen/OnSessionClose` 不拥有 Provider 生命周期；
 - 实现 `DomainClassKey`、descriptor catalog、Device/LocalDomain/Fabric IDs 和 keys；
@@ -1730,7 +1730,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 | P0 | Alpha 的 Pod assignment annotation 传递形状 | BindContext extension、Pod metadata 写入位置和 key 命名 | 已绑定 Pod 必须保留 NodeName + canonical DeviceKeys；摘要不能成为唯一事实源 |
 | P0 | `ResourceTopologyDescriptor` 的 scheduler-side 载体 | 静态配置、安装文件或 ConfigMap 的交付形状 | DomainClassKey 语义固定；scheduler 不得在未知 class 上规划；运行期间不可修改 |
 | P1 | allocate 内部 planner 的插入点 | 是否复用现有 action helper 或新增私有 package | side-effect-free、paired snapshot、final Node/DeviceKey revalidation；不冻结通用 framework hook |
-| P1 | plugin config validator 的 framework 形状 | generic validator registry 或 scheduler 专用校验 | 首次启动前必须严格失败；不把错误变成普通调度 |
+| P1 | activation guard 的 scheduler 落点 | scheduler 配置加载、process manager readiness 与 policy core guard 的最小组合 | 不新增无调用链的 generic validator；错误配置不能让非空 policy 进入普通调度 |
 | P1 | `domainClass` 名称语法与 catalog 演进规则 | DNS label 的精确限制、废弃窗口和版本策略 | key 至少包含 resource+scope+name；V4 拒绝旧字段和隐式 fallback |
 | P1 | 是否需要显式多个 acceptable classes | 独立 API 形状和优先级 | 首个 Alpha 只接受单一精确 class；不得用 internal rank 自动扩大 |
 | P1 | Fabric mock 与真实 Fabric 验收的发布节奏 | milestone 顺序 | 普通网络不可自动推导 Fabric；真实硬件不阻塞 Alpha 文档合同 |
@@ -1752,7 +1752,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 | 进程参数 | `cmd/scheduler/main.go`、`cmd/webhook-manager/main.go` | 复用现有 `--feature-gates` plumbing，scheduler/admission 同名启用 |
 | Helm 配置 | `installer/helm/chart/volcano/values.yaml`、`templates/scheduler.yaml`、`templates/admission.yaml` | 传递两个 component gate；完整覆盖 scheduler ConfigMap 时保留其他 plugin |
 | Scheduler config validation | `pkg/scheduler/util.go`、`pkg/scheduler/scheduler.go`、`pkg/scheduler/framework/plugins.go`（建议扩展） | gate/plugin 矩阵和最小静态 option 校验；reload/drain 属后续发布 |
-| Plugin factory | `pkg/scheduler/plugins/factory.go` | 注册 `xpu-topology-aware` builder 与 proposed config validator |
+| Plugin factory | `pkg/scheduler/plugins/factory.go` | 注册 `xpu-topology-aware` builder；activation guard 位于 scheduler/policy 路径 |
 | 当前 ClusterInfo | `pkg/scheduler/api/cluster_info.go` | 增加 immutable `DeviceTopology` 字段 |
 | 当前 snapshot | `pkg/scheduler/cache/cache.go:SchedulerCache.Snapshot` | 同主锁观察点捕获 cluster + topology pointer |
 | Session 初始化 | `pkg/scheduler/framework/session.go:openSession` | 从 ClusterInfo 取得同一 topology view |
