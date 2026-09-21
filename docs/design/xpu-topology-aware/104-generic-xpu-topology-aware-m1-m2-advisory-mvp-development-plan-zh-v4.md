@@ -40,7 +40,8 @@ policy 在 assignment 写入、Provider exact-key 确认和运行时对账完成
 | `hard` | 识别并生成明确 reason | 一律 fail closed，不进入 Bind |
 | scheduler-selected DeviceKey | canonical 类型和 Provider capability 形状 | 不执行、不持久化 |
 | `volcano.sh/xpu-assignment` | 仅保留合同常量/解析边界 | 不写 Pod；由 XPU-11/13 交付 |
-| vGPU/MIG/DRA/multi-container | 不支持 | 不支持 |
+| vGPU/MIG/DRA/shared geometry | 不支持 | 不支持 |
+| multi-container/init/restartable init 的 device 请求形状 | 不涉及 | 受限支持；M2 不做 exact assignment |
 
 M2 的 soft score 只表达 topology membership、health 和结构容量形成的偏好，并与现有 Node aggregate resource fit 组合。M2 没有
 per-device allocation owner，也不知道 stock kubelet 已把哪些 UUID 分配给其他 Pod，因此不能声明某个 Domain 当前存在精确空闲
@@ -255,8 +256,10 @@ codegen/manifests 更新，不手工维护一套旁路定义。
 - webhook-manager 不为 policy update 增加 Pod lister、活动索引或第二权威源；admission 只校验新 persisted typed spec 的 API 形状与同 spec 冲突；
 - semantic update（包括删除）允许提交并只影响未来未调度 Pod；已 Bound/Running Pod 不重调度，也不因 policy 变更创建 recovery/anchor 状态；
 - `JobInfo.SetPodGroup/UnsetPodGroup/Clone` 保存 canonical policy/fingerprint，并在顶层或 SubGroup policy 变化时重建/失效对应 SubJob view；
-- scheduler compiler 重新校验被 policy 命中的 Task 请求形状；M1/M2 只接受单普通 Container、正整数扩展资源且 request=limit，
-  multi-container/init-container、共享/小数资源明确返回 unsupported；
+- M2 scheduler compiler 重新校验被 policy 命中的 Task 请求形状；允许多个 regular container、普通 init container 和
+  restartable init container，但对每条 policy `resourceName` 只允许一个容器声明该扩展资源；该容器必须提供正整数
+  `limit`，`request` 可以省略，若存在则必须与 `limit` 相等；DRA、共享/小数资源和同一资源的多容器重复请求明确返回
+  unsupported；
 - 复用 PodGroup Condition，保留 authoring conflict blocker 优先级；动态 scheduler reason 不能覆盖未解决的
   `XPUTopologyPolicyConflict`；
 - direct PodGroup 之外的来源不创建 topology policy。
@@ -451,6 +454,7 @@ DeviceID、PodUID 或高基数 Domain/Fabric ID。
 | M2-06 | Group soft | 同 Session overlay 产生偏好；Session restart 不伪造 hard anchor |
 | M2-07 | hard | `allocate` 与 `backfill` 都无 Bind，reason=`XPUAssignmentNotEnforceable` 或更具体 blocker |
 | M2-08 | stock Device Plugin | 不把 Pod Running、资源数量或 kubelet 最终 ID 写成 scheduler-selected UUID 成功 |
+| M2-09 | multi-container/init 请求形状 | 多个 regular/init/restartable-init container 可存在；每条 resourceName 仅一个容器声明；limit-only、正整数 limit 可通过；重复请求、request-only、小数或 request != limit 拒绝 |
 
 ### 8.3 M2 演示步骤
 
@@ -529,7 +533,7 @@ server/kind 上补证据；静态 CRD diff、Fake client 或 Markdown 检查不�
 - 不实现 scheduler-selected UUID 的 stock Device Plugin bridge；
 - 不写 `volcano.sh/xpu-assignment`，不恢复 Pod-derived hard anchor；
 - 不实现 hard Group planner、Statement operation 扩展或 BindContext assignment；
-- 不实现 DRA、MIG、vGPU/shared geometry、multi-container/init-container；
+- 不实现 DRA、MIG、vGPU/shared geometry；M2 阶段不实现 multi-container/init-container 的 exact assignment、DeviceKey 持久化和生命周期协调；
 - 不实现外部 reservation/release/reconcile、active-active fencing、多 Pod Bind 原子性；
 - 不实现 topology-aware preempt/reclaim victim selection；
 - 不新建 catalog CRD、动态 catalog 更新、历史版本或第二个控制面；

@@ -40,11 +40,12 @@ V4 中的“PR 1”和“PR 3”各自包含多个跨组件改动，本计划将
 
 ### 1.2 首期范围
 
-包含：Annotation/Mock Provider、Node-local 和显式 Fabric、PodGroup/SubGroup、direct PodGroup canonical authoring、单普通 Container 整卡、
-基于已绑定 Pod 的稳定跨 wave anchor、单 active leader，以及一个 Provider 能否消费/确认 scheduler-selected DeviceKey 的探针。
+包含：Annotation/Mock Provider、Node-local 和显式 Fabric、PodGroup/SubGroup、direct PodGroup canonical authoring、M2 Advisory 与后续
+exact Alpha 共用的 multi-container/init/restartable-init device 请求形状、基于已绑定 Pod 的稳定跨 wave anchor、单 active leader，以及
+一个 Provider 能否消费/确认 scheduler-selected DeviceKey 的探针。
 
-延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何作为 Alpha workload API、多 Container/init 生命周期、topology-aware victim selection、
-自动推导 Fabric、通信 ring 优化、外部设备生命周期、多 Pod Bind 原子性、workload 同时启动屏障。
+延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何作为 Alpha workload API、topology-aware victim selection、自动推导 Fabric、通信 ring
+优化、外部设备生命周期、多 Pod Bind 原子性、workload 同时启动屏障。
 首个 Provider 的厂商目标固定为 NVIDIA；XPU-01 主轨道仍使用 `nvml-mock + NVIDIA Device Plugin` 接入 `nvidia.com/gpu`，并保留 stock
 Device Plugin 的 exact-ID 缺口结论。新增的 vGPU 轨道只复用现有 `volcano-vgpu-device-plugin` 作为 L1 Adapter 证据，使用
 `deviceSplitCount=1` 的最小单槽位验证配置，不表示首期支持 vGPU 请求形状。HAMi 不是底层设备厂商。
@@ -238,7 +239,8 @@ M2 所需 XPU-00～07 约 **39～59 人日**，其中包含提前执行的 Provi
 - typed canonicalization 拒绝重复 JSON key、未知字段和无效类型；不冻结多源优先级或 owner/template 冲突系统。
 - 解析失败时保留 blocker；scheduler 不直接读 workload annotation。
 - 实现 quiescent/no-op/活动 mutation 规则，复用已有对象的 resourceVersion/generation CAS。
-- 提前校验单普通 Container 正整数整卡、request/limit 及 Group 成员形状；scheduler 对运行时可见对象再次校验。
+- M2 scheduler 与后续 exact Alpha 共用请求形状校验：每条 resourceName 只由一个 regular/init/restartable-init container 声明，且 limit
+  为正整数；request 可省略，若存在则必须与 limit 相等；exact Alpha 的 assignment handoff 额外持久化该容器引用。
 - 统一 outcome：controller authoring blocker 优先，之后具体 xPU reason 优于泛化资源不足；解决后清除陈旧 True，保留其他 status 字段。
 
 **完成条件**：direct PodGroup、活动期删除、合法 no-op、status conflict retry 和 scheduler blocker 均覆盖；scheduler catalog 不可读时 fail closed。

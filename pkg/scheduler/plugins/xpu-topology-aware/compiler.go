@@ -277,29 +277,55 @@ func taskResourceRequest(task *api.TaskInfo, resourceName corev1.ResourceName) (
 		return 0, fmt.Errorf("Pod is required")
 	}
 	pod := task.Pod
-	if len(pod.Spec.Containers) != 1 {
-		return 0, fmt.Errorf("M2 requires exactly one regular container")
-	}
-	if len(pod.Spec.InitContainers) != 0 || task.HasRestartableInitContainer {
-		return 0, fmt.Errorf("M2 does not support init containers")
-	}
 	if len(task.DRAResreq) != 0 || len(task.ResourceClaimKeys) != 0 || len(task.ResourceClaimDRAResreq) != 0 {
 		return 0, fmt.Errorf("M2 does not support DRA requests")
 	}
 
-	container := pod.Spec.Containers[0]
-	request, requested := container.Resources.Requests[resourceName]
-	limit, limited := container.Resources.Limits[resourceName]
-	if !requested || !limited {
-		return 0, fmt.Errorf("request and limit must both be set")
+	var (
+		matched       bool
+		matchedValue  int64
+		matchedSource string
+	)
+	checkContainer := func(container corev1.Container, source string) error {
+		request, requested := container.Resources.Requests[resourceName]
+		limit, limited := container.Resources.Limits[resourceName]
+		if !requested && !limited {
+			return nil
+		}
+
+		if matched {
+			return fmt.Errorf("only one container may request device resource %s; already found in %s, also found in %s %q", resourceName, matchedSource, source, container.Name)
+		}
+		if !limited {
+			return fmt.Errorf("%s %q: device resource limit must be set", source, container.Name)
+		}
+		if limit.Sign() <= 0 || limit.MilliValue()%1000 != 0 {
+			return fmt.Errorf("%s %q: limit must be a positive integral device count", source, container.Name)
+		}
+		if requested && request.Cmp(limit) != 0 {
+			return fmt.Errorf("%s %q: request must equal limit when both are set", source, container.Name)
+		}
+
+		matched = true
+		matchedValue = limit.Value()
+		matchedSource = fmt.Sprintf("%s %q", source, container.Name)
+		return nil
 	}
-	if request.Sign() <= 0 || request.MilliValue()%1000 != 0 {
-		return 0, fmt.Errorf("request must be a positive integral device count")
+
+	for _, container := range pod.Spec.Containers {
+		if err := checkContainer(container, "regular container"); err != nil {
+			return 0, err
+		}
 	}
-	if request.Cmp(limit) != 0 {
-		return 0, fmt.Errorf("request must equal limit")
+	for _, container := range pod.Spec.InitContainers {
+		if err := checkContainer(container, "init container"); err != nil {
+			return 0, err
+		}
 	}
-	return request.Value(), nil
+	if !matched {
+		return 0, fmt.Errorf("device resource %s must be requested by exactly one container", resourceName)
+	}
+	return matchedValue, nil
 }
 
 func groupKeyFor(job *api.JobInfo, subJob api.SubJobID, policy api.CanonicalDeviceTopologyPolicy) *groupPolicyKey {

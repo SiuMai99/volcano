@@ -312,6 +312,125 @@ func compilerTestTask(name string, devices int64) *api.TaskInfo {
 	return api.NewTaskInfo(pod)
 }
 
+func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testing.T) {
+	quantity := *resource.NewQuantity(2, resource.DecimalSI)
+	restartPolicy := corev1.ContainerRestartPolicyAlways
+
+	tests := []struct {
+		name           string
+		containers     []corev1.Container
+		initContainers []corev1.Container
+		want           int64
+	}{
+		{
+			name: "multiple regular containers with one device consumer",
+			containers: []corev1.Container{
+				{Name: "worker", Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{compilerTestResource: quantity},
+				}},
+				{Name: "sidecar"},
+			},
+			want: 2,
+		},
+		{
+			name:       "ordinary init container with device limit",
+			containers: []corev1.Container{{Name: "worker"}},
+			initContainers: []corev1.Container{{Name: "prepare", Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{compilerTestResource: quantity},
+			}}},
+			want: 2,
+		},
+		{
+			name:       "restartable init container with device limit",
+			containers: []corev1.Container{{Name: "worker"}},
+			initContainers: []corev1.Container{{Name: "sidecar-init", RestartPolicy: &restartPolicy, Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{compilerTestResource: quantity},
+			}}},
+			want: 2,
+		},
+		{
+			name: "request and limit are both accepted when equal",
+			containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{compilerTestResource: quantity},
+				Limits:   corev1.ResourceList{compilerTestResource: quantity},
+			}}},
+			want: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{Spec: corev1.PodSpec{
+				Containers:     tt.containers,
+				InitContainers: tt.initContainers,
+			}}
+			got, err := taskResourceRequest(api.NewTaskInfo(pod), compilerTestResource)
+			if err != nil {
+				t.Fatalf("taskResourceRequest() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("taskResourceRequest() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTaskResourceRequestRejectsUnsupportedDeviceShapes(t *testing.T) {
+	integerTwo := *resource.NewQuantity(2, resource.DecimalSI)
+	fractional := *resource.NewMilliQuantity(1500, resource.DecimalSI)
+	tests := []struct {
+		name       string
+		containers []corev1.Container
+		wantError  string
+	}{
+		{
+			name: "two regular containers request the device",
+			containers: []corev1.Container{
+				{Name: "worker", Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{compilerTestResource: integerTwo}}},
+				{Name: "other", Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{compilerTestResource: integerTwo}}},
+			},
+			wantError: "only one container",
+		},
+		{
+			name: "request without limit",
+			containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{compilerTestResource: integerTwo},
+			}}},
+			wantError: "limit must be set",
+		},
+		{
+			name: "fractional limit",
+			containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{compilerTestResource: fractional},
+			}}},
+			wantError: "positive integral",
+		},
+		{
+			name: "request and limit differ",
+			containers: []corev1.Container{{Name: "worker", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{compilerTestResource: *resource.NewQuantity(1, resource.DecimalSI)},
+				Limits:   corev1.ResourceList{compilerTestResource: integerTwo},
+			}}},
+			wantError: "request must equal limit",
+		},
+		{
+			name:       "no container requests the device",
+			containers: []corev1.Container{{Name: "worker"}},
+			wantError:  "must be requested by exactly one container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: tt.containers}}
+			_, err := taskResourceRequest(api.NewTaskInfo(pod), compilerTestResource)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("taskResourceRequest() error = %v, want substring %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
 func compilerTestSnapshot(capacities map[string]int64, freshUntil map[string]time.Time) *api.DeviceTopologySnapshot {
 	class := api.DomainClassKey{ResourceName: compilerTestResource, Scope: scheduling.DeviceTopologyDomainScopeNode, Name: "local-scale-up"}
 	nodes := make(map[string]api.DeviceTopologyNodeState, len(capacities))

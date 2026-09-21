@@ -152,7 +152,7 @@ flowchart LR
 下列能力不进入首个 Pod-derived Topology Alpha：
 
 - DRA `claimName` Public API 和 ResourceSlice Provider；
-- MIG、vGPU、共享/分数设备、多 Container、Init Container 的 allocation lifecycle；
+- MIG、vGPU、共享/分数设备的 exact allocation lifecycle；多 Container/Init Container 的请求形状和 assignment lifecycle 属于本 Alpha；
 - topology-aware victim selection 和 device-level pipeline 持久化；
 - 自动推导 Fabric、NCCL ring、厂商 link-bandwidth 规划；
 
@@ -1350,15 +1350,18 @@ PodDerivedGroupAnchor(F1)         -> 当前 Session 从 Pod 重建的具体实�
 
 ## 7. Alpha 请求形状、Pod assignment 与 Provider
 
-### 7.1 单普通 Container 整卡限制
+### 7.1 多 Container/Init 下的单设备消费者整卡限制
+
+本节约束同时适用于 M2 Advisory compiler 和后续带有 `DeviceKey -> assignment -> runtime` handoff 的 Pod-derived exact Alpha。
+Pod 可以包含多个 regular container、普通 init container 和 restartable init container；但对每条
+`DeviceTopologyPolicy.resourceName`，在所有这些容器中只能有一个设备消费者。该容器必须提供正整数 `limit`，`request` 可以省略，
+若存在则必须与 `limit` 相等。DRA、MIG、vGPU、共享/分数设备仍不属于本 Alpha 请求形状。
 
 对每条 Alpha `DeviceTopologyPolicy.resourceName`，每个被该 policy 选中的 Pod 必须满足：
 
-- 目标资源只出现在一个 `spec.containers[]` 普通 Container；
-- request 为正整数 whole-device quantity；
-- 该 Container 的 request/limit 符合 Kubernetes 扩展资源规则且数量一致；
-- `initContainers`、restartable init sidecar、ephemeral container 不得请求该目标资源；
-- 另一个普通 Container 不得再次请求同一目标资源；
+- 目标资源只出现在一个 `spec.containers[]`、`spec.initContainers[]` 或 restartable init container；其他容器可以存在，但不得再次请求同一目标资源；
+- 该 Container 的 `limit` 为正整数 whole-device quantity；`request` 可以省略，若存在则必须与 `limit` 相等；
+- ephemeral container 不得请求该目标资源；
 - 不接受 DRA claim、MIG、vGPU、memory/core share 或厂商 fractional geometry；
 - `applyTo=Group` 的所有目标成员都必须满足同一可解释形状；
 - `applyTo=Pod` 时，只有 selector 命中的 Pod 进入该 policy，但命中后不得以“请求为零”静默跳过。
@@ -1367,13 +1370,13 @@ PodDerivedGroupAnchor(F1)         -> 当前 Session 从 Pod 重建的具体实�
 `XPUTopologyUnsupportedPodRequest` 并保持 Pending。
 
 普通 Kubernetes effective Pod request 仍由现有 Predicate 计算。上面的限制只用于建立无歧义的
-`ContainerName -> selected DeviceKeys -> canonical DeviceID` handoff，不在 xPU plugin 内重写 CPU/内存/Init Container
-的一般资源计算。
+`ContainerRef -> selected DeviceKeys -> canonical DeviceID` handoff，不在 xPU plugin 内重写 CPU/内存等一般资源计算。
 
 ### 7.2 完整 assignment identity
 
 ~~~go
 type TopologyContainerAssignment struct {
+    ContainerKind string // regular|init|restartable-init
     ContainerName string
     ResourceName  corev1.ResourceName
     DeviceKeys    []DeviceKey
@@ -1399,6 +1402,7 @@ Alpha 中每个目标 resource 的 `Assignments` 恰有一项。Bind 前由 sche
 ~~~json
 {
   "version": 1,
+  "container": {"kind": "regular", "name": "worker"},
   "resourceName": "nvidia.com/gpu",
   "provider": "nvidia-nvml-v1",
   "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
@@ -1674,7 +1678,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 ### 11.4 PR 3：Pod-derived Topology Alpha
 
-- 单普通 Container 整卡 validation 和完整 assignment identity；
+- 多 Container/Init 下的单设备消费者整卡 validation、ContainerRef 和完整 assignment identity；
 - side-effect-free group planner、AdmissionSet 和 Session-local anchor；
 - scheduler-owned `volcano.sh/xpu-assignment` 随成功 Pod Bind 保留；
 - 后续 Session 从 bound Pod 的 NodeName + DeviceKeys 恢复 Group anchor；
@@ -1717,7 +1721,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - Alpha Public API 不含 allocationStrategy；
 - scheduler 只读取 PodGroup canonical spec；
 - activity 后 policy semantic mutation 被拒绝；
-- Alpha 请求形状为单普通 Container 整卡；
+- Alpha 请求形状允许多个 regular/init/restartable-init container，但每条 resourceName 只有一个设备消费者；limit 为正整数，request 可选且存在时必须相等；
 - Annotation Fabric 为 single owner complete declaration；
 - topology-aware victim choice、外部 allocation lifecycle 和多 Pod 原子 Bind 均不属于首个 Alpha；
 - feature gate 名为 `XPUTopologyAwareScheduling`、Alpha 默认关闭；scheduler plugin 名为 `xpu-topology-aware`，必须双重显式启用；
@@ -1743,7 +1747,6 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 - topology-aware victim selection；
 - DRA claim selector 和 ResourceSlice Provider；
-- multi-container/init-container lifecycle；
 - MIG/vGPU/shared geometry；
 - cluster-scoped Fabric authority；
 - link-aware ring/collective communication planning；
@@ -1832,7 +1835,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 后续研究
   topology-aware victim selection
-  DRA/MIG/vGPU/multi-container
+  DRA/MIG/vGPU/shared-geometry
   cluster-scoped Fabric authority
 ~~~
 
