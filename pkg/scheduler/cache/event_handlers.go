@@ -571,7 +571,6 @@ func (sc *SchedulerCache) removeNodeImageStates(node string) {
 // AddOrUpdateNode adds or updates node info in cache.
 func (sc *SchedulerCache) AddOrUpdateNode(node *v1.Node) error {
 	sc.Mutex.Lock()
-	defer sc.Mutex.Unlock()
 
 	if sc.Nodes[node.Name] != nil {
 		sc.Nodes[node.Name].SetNode(node)
@@ -591,13 +590,19 @@ func (sc *SchedulerCache) AddOrUpdateNode(node *v1.Node) error {
 	if !nodeExisted {
 		sc.NodeList = append(sc.NodeList, node.Name)
 	}
+	retiredNode, topologyNodeChanged := sc.observeXPUTopologyNodeLocked(node)
+	sc.Mutex.Unlock()
+
+	// Provider tracker cleanup may normalize cross-Node facts, so it must not
+	// run under SchedulerCache.Mutex. The Pending paired pointer is already
+	// visible before this call begins.
+	sc.forgetXPUTopologyNodeObservation(retiredNode, topologyNodeChanged)
 	return nil
 }
 
 // RemoveNode removes node info from cache
 func (sc *SchedulerCache) RemoveNode(nodeName string) error {
 	sc.Mutex.Lock()
-	defer sc.Mutex.Unlock()
 
 	for i, name := range sc.NodeList {
 		if name == nodeName {
@@ -608,6 +613,7 @@ func (sc *SchedulerCache) RemoveNode(nodeName string) error {
 	sc.removeNodeImageStates(nodeName)
 
 	if _, ok := sc.Nodes[nodeName]; !ok {
+		sc.Mutex.Unlock()
 		return fmt.Errorf("node <%s> does not exist", nodeName)
 	}
 
@@ -620,6 +626,12 @@ func (sc *SchedulerCache) RemoveNode(nodeName string) error {
 		}
 	}
 	delete(sc.Nodes, nodeName)
+	retiredNode, topologyNodeRemoved := sc.removeXPUTopologyNodeLocked(nodeName)
+	sc.Mutex.Unlock()
+
+	// See AddOrUpdateNode: retire process-scoped Provider records only after
+	// publishing the Node deletion's filtered immutable view.
+	sc.forgetXPUTopologyNodeObservation(retiredNode, topologyNodeRemoved)
 	return nil
 }
 

@@ -93,6 +93,10 @@ type Session struct {
 	Jobs           map[api.JobID]*api.JobInfo
 	Nodes          map[string]*api.NodeInfo
 	CSINodesStatus map[string]*api.CSINodeStatusInfo
+	// DeviceTopology is the immutable pointer paired with this Session's
+	// ClusterInfo snapshot. Plugins must consume this view rather than taking a
+	// second topology/cache snapshot during scheduling.
+	DeviceTopology *api.DeviceTopologySnapshot
 	RevocableNodes map[string]*api.NodeInfo
 	Queues         map[api.QueueID]*api.QueueInfo
 	NamespaceInfo  map[api.NamespaceName]*api.NamespaceInfo
@@ -238,6 +242,7 @@ func openSession(cache cache.Cache) *Session {
 	taskCountsByQueue := make(map[api.QueueID]map[string]int, len(snapshot.Queues))
 
 	ssn.Jobs = snapshot.Jobs
+	ssn.DeviceTopology = snapshot.DeviceTopology
 	for _, job := range ssn.Jobs {
 		if job.PodGroup != nil {
 			ssn.PodGroupOldState.Status[job.UID] = *job.PodGroup.Status.DeepCopy()

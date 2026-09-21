@@ -669,9 +669,13 @@ NodeName 只用于查询、日志和 Kubernetes Bind；所有 assignment、membe
 
 ~~~go
 type NodeIdentity struct {
-    Name            string
-    UID             types.UID
-    ResourceVersion string
+    Name string
+    UID  types.UID
+}
+
+type NodeObservation struct {
+    Identity         NodeIdentity
+    ResourceVersion string // source-correlation metadata, not identity
 }
 
 type TopologyDevice struct {
@@ -846,7 +850,7 @@ Provider 负责 source-specific parse 和 normalize，不提供 `FilterNode/Scor
 - `ClearFacts` 表示 Provider 已检查该 identity contract 在该 Node 上没有 inventory，它只能清除同一 `ProviderNodeKey` 并完成其初次同步；
 - invalid payload 不能完成初次同步，也不能覆盖最后一次有效事实；
 - 同一 `ProviderNodeKey` 的 source generation 对 topology content 单调；相同 generation 只允许内容完全相同的 heartbeat；
-- Kubernetes `resourceVersion` 是 opaque 字符串，只做“是否仍等于当前观察对象”比较，不做数值排序；
+- Kubernetes `resourceVersion` 是 opaque 字符串，只作为 Provider 观测元数据和诊断关联，不是 Node identity；同 UID 的 Node 元数据更新不使 facts 失效，也不做数值排序；
 - Provider 时间戳用于 freshness，不用于 Node update 排序。
 
 Provider 注册时的 `TopologyProviderCapabilities.DomainClasses` 必须是 catalog 的子集且 resource/scope 完全匹配，不允许
@@ -984,9 +988,9 @@ closure、Provider RPC 或全量 clone。
 
 ~~~text
 Node informer event
-  -> record the current NodeName/UID/resourceVersion and invalidate old candidate facts
+  -> record the current NodeName/UID; invalidate old candidate facts only when UID changes or the Node is deleted
   -> do parse, normalize, graph closure and Provider validation outside cache locks
-  -> before publish, re-check NodeName/UID/resourceVersion and source generation
+  -> before publish, re-check NodeName/UID and source generation
   -> publish a new immutable topology snapshot
 ~~~
 
@@ -997,7 +1001,7 @@ cache synchronization 的临界区执行。具体同步实现必须避免旧 par
 Provider 校验失败只会使相应 facts 不可用；已通过 Provider/canonical 校验的 facts 仍可发布给 `soft` advisory。Alpha 不把外部
 allocation 状态作为 topology ingestion 的硬前置。
 
-如果锁外工作结束后 UID/resourceVersion 或 source generation 已变化，结果直接丢弃并重新入队；不能把旧 parse 结果发布给新 Node。
+如果锁外工作结束后 NodeName/UID 或 source generation 已变化，结果直接丢弃并重新入队；同 UID 的 ResourceVersion 变化不单独使结果失效，不能把旧 parse 结果发布给新 UID Node。
 Node identity 的 Pending/invalidation 和 `sc.Nodes` 可见性必须在同一 cache 观察点更新，使任何 Session 至多看到：
 
 - 旧 Node + 旧 UID 的有效 view；或
@@ -1652,7 +1656,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - 建立 process-scoped topology manager；plugin `New/OnSessionOpen/OnSessionClose` 不拥有 Provider 生命周期；
 - 实现 `DomainClassKey`、descriptor catalog、Device/LocalDomain/Fabric IDs 和 keys；
 - `DeviceDomain/FabricDomain.Class`、`DomainsByClass` 与固定 catalog 校验后的 topology publish；
-- Node UID/RV ordering、Pending/Synced、旧 UID assignment 失效；
+- Node UID identity、ResourceVersion observation metadata、Pending/Synced、旧 UID assignment 失效；
 - Annotation/Mock Provider、schema/security 和 freshness；
 - single-owner complete Fabric declaration；
 - immutable topology objects、indexes 和 unit tests。

@@ -42,6 +42,10 @@ type ClusterInfo struct {
 	NodeList                  []string
 	CSINodesStatus            map[string]*CSINodeStatusInfo
 	NodesInShard              sets.Set[string]
+	// DeviceTopology is the immutable topology view paired with this ClusterInfo
+	// observation. It is a pointer by design: Session consumers must not take a
+	// second cache snapshot or mutate a published topology view.
+	DeviceTopology *DeviceTopologySnapshot
 }
 
 func (ci ClusterInfo) String() string {

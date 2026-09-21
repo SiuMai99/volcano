@@ -124,12 +124,51 @@ const (
 	DeviceHealthUnknown DeviceHealth = "Unknown"
 )
 
-// NodeIdentity keeps Kubernetes lookup data separate from NodeUID-based
-// canonical identity.
+// NodeIdentity identifies one Kubernetes Node incarnation. NodeUID is the
+// immutable incarnation identity; Name is retained for lookup and diagnostics.
 type NodeIdentity struct {
-	Name            string
-	UID             types.UID
+	Name string
+	UID  types.UID
+}
+
+// NodeObservation carries mutable metadata observed alongside a NodeIdentity.
+// ResourceVersion is source-correlation metadata only; it is not part of the
+// Node incarnation identity and must not invalidate topology facts on its own.
+type NodeObservation struct {
+	Identity        NodeIdentity
 	ResourceVersion string
+}
+
+// DeviceTopologyNodeSyncState describes the topology source state paired with
+// one concrete Kubernetes Node observation. Pending is deliberately distinct
+// from an empty inventory: a new Node incarnation must not inherit facts from
+// the same NodeName's previous UID.
+type DeviceTopologyNodeSyncState string
+
+const (
+	// DeviceTopologyNodePending has no valid topology observation for this
+	// exact Node identity yet.
+	DeviceTopologyNodePending DeviceTopologyNodeSyncState = "Pending"
+	// DeviceTopologyNodeSynced has a valid Provider observation at the recorded
+	// source generation.
+	DeviceTopologyNodeSynced DeviceTopologyNodeSyncState = "Synced"
+)
+
+// DeviceTopologyNodeState is the immutable-by-copy per-Node readiness view
+// carried by a DeviceTopologySnapshot.
+type DeviceTopologyNodeState struct {
+	Identity         NodeIdentity
+	SyncState        DeviceTopologyNodeSyncState
+	SourceGeneration uint64
+}
+
+// PendingFabric is a normalized Fabric declaration that cannot yet be used
+// because one or more explicitly declared members are unavailable. It is not
+// a fallback Fabric and has no scheduling side effect by itself.
+type PendingFabric struct {
+	Key          FabricKey
+	OwnerNodeUID types.UID
+	Reason       string
 }
 
 // TopologyDevice is the canonical Provider fact for a concrete device.
@@ -176,6 +215,160 @@ type FabricDomain struct {
 	SourceGeneration      uint64
 	Members               []FabricMember
 	MembershipFingerprint string
+}
+
+// DeviceTopologySnapshot is the cache-published, immutable-by-copy topology
+// view paired with ClusterInfo. Callers must treat all maps, slices, and
+// nested objects as read-only. Constructors below copy every mutable input so
+// Provider-owned source objects and later publications cannot alter a Session
+// that already holds this pointer.
+//
+// The snapshot intentionally contains topology facts and readiness only. It
+// does not track allocations, subtract normal Node resources, or encode a
+// scheduler-selected DeviceKey.
+type DeviceTopologySnapshot struct {
+	Nodes               map[string]DeviceTopologyNodeState
+	Devices             map[DeviceKey]TopologyDevice
+	LocalDomains        map[LocalDomainKey]DeviceDomain
+	Fabrics             map[FabricKey]FabricDomain
+	LocalDomainsByClass map[DomainClassKey][]LocalDomainKey
+	FabricsByClass      map[DomainClassKey][]FabricKey
+	PendingFabrics      []PendingFabric
+}
+
+// NewDeviceTopologySnapshot constructs one caller-owned immutable-by-copy
+// view. It is safe to publish the returned pointer after this function
+// returns; no input map, slice, or nested member remains shared with it.
+func NewDeviceTopologySnapshot(
+	nodes map[string]DeviceTopologyNodeState,
+	devices map[DeviceKey]TopologyDevice,
+	localDomains map[LocalDomainKey]DeviceDomain,
+	fabrics map[FabricKey]FabricDomain,
+	localDomainsByClass map[DomainClassKey][]LocalDomainKey,
+	fabricsByClass map[DomainClassKey][]FabricKey,
+	pendingFabrics []PendingFabric,
+) *DeviceTopologySnapshot {
+	result := &DeviceTopologySnapshot{
+		Nodes:               make(map[string]DeviceTopologyNodeState, len(nodes)),
+		Devices:             make(map[DeviceKey]TopologyDevice, len(devices)),
+		LocalDomains:        make(map[LocalDomainKey]DeviceDomain, len(localDomains)),
+		Fabrics:             make(map[FabricKey]FabricDomain, len(fabrics)),
+		LocalDomainsByClass: make(map[DomainClassKey][]LocalDomainKey, len(localDomainsByClass)),
+		FabricsByClass:      make(map[DomainClassKey][]FabricKey, len(fabricsByClass)),
+		PendingFabrics:      append([]PendingFabric(nil), pendingFabrics...),
+	}
+	for name, state := range nodes {
+		result.Nodes[name] = state
+	}
+	for key, device := range devices {
+		device.LocalDomainKeys = append([]LocalDomainKey(nil), device.LocalDomainKeys...)
+		result.Devices[key] = device
+	}
+	for key, domain := range localDomains {
+		domain.MemberDeviceKeys = append([]DeviceKey(nil), domain.MemberDeviceKeys...)
+		domain.MemberDomainKeys = append([]LocalDomainKey(nil), domain.MemberDomainKeys...)
+		domain.EffectiveDeviceKeys = append([]DeviceKey(nil), domain.EffectiveDeviceKeys...)
+		result.LocalDomains[key] = domain
+	}
+	for key, fabric := range fabrics {
+		fabric.Members = append([]FabricMember(nil), fabric.Members...)
+		for index := range fabric.Members {
+			fabric.Members[index].LocalDomainKeys = append([]LocalDomainKey(nil), fabric.Members[index].LocalDomainKeys...)
+		}
+		result.Fabrics[key] = fabric
+	}
+	for key, domainKeys := range localDomainsByClass {
+		result.LocalDomainsByClass[key] = append([]LocalDomainKey(nil), domainKeys...)
+	}
+	for key, fabricKeys := range fabricsByClass {
+		result.FabricsByClass[key] = append([]FabricKey(nil), fabricKeys...)
+	}
+	return result
+}
+
+// FilterDeviceTopologySnapshot returns a new immutable-by-copy snapshot that
+// retains only facts still paired with a Synced Node identity and source
+// generation. It is used for lightweight Node invalidation: a same-name Node
+// replacement therefore cannot observe the previous incarnation's facts.
+func FilterDeviceTopologySnapshot(source *DeviceTopologySnapshot, nodes map[string]DeviceTopologyNodeState) *DeviceTopologySnapshot {
+	if source == nil {
+		return NewDeviceTopologySnapshot(nodes, nil, nil, nil, nil, nil, nil)
+	}
+
+	nodeFor := func(name string, uid types.UID, generation uint64) bool {
+		state, found := nodes[name]
+		return found && state.Identity.Name == name && state.Identity.UID == uid &&
+			state.SyncState == DeviceTopologyNodeSynced && state.SourceGeneration == generation
+	}
+	nodeForUID := func(uid types.UID, generation uint64) bool {
+		for _, state := range nodes {
+			if state.Identity.UID == uid && state.SyncState == DeviceTopologyNodeSynced && state.SourceGeneration == generation {
+				return true
+			}
+		}
+		return false
+	}
+
+	devices := make(map[DeviceKey]TopologyDevice, len(source.Devices))
+	for key, device := range source.Devices {
+		if nodeFor(device.NodeName, key.OwnerNodeUID, device.SourceGeneration) {
+			devices[key] = device
+		}
+	}
+	localDomains := make(map[LocalDomainKey]DeviceDomain, len(source.LocalDomains))
+	for key, domain := range source.LocalDomains {
+		if nodeFor(domain.NodeName, key.OwnerNodeUID, domain.SourceGeneration) {
+			localDomains[key] = domain
+		}
+	}
+	fabrics := make(map[FabricKey]FabricDomain, len(source.Fabrics))
+	for key, fabric := range source.Fabrics {
+		if !nodeForUID(fabric.OwnerNodeUID, fabric.SourceGeneration) {
+			continue
+		}
+		valid := true
+		for _, member := range fabric.Members {
+			if !nodeFor(member.NodeName, member.NodeUID, member.SourceGeneration) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			fabrics[key] = fabric
+		}
+	}
+	localDomainsByClass := make(map[DomainClassKey][]LocalDomainKey, len(source.LocalDomainsByClass))
+	for class, keys := range source.LocalDomainsByClass {
+		for _, key := range keys {
+			if _, found := localDomains[key]; found {
+				localDomainsByClass[class] = append(localDomainsByClass[class], key)
+			}
+		}
+	}
+	fabricsByClass := make(map[DomainClassKey][]FabricKey, len(source.FabricsByClass))
+	for class, keys := range source.FabricsByClass {
+		for _, key := range keys {
+			if _, found := fabrics[key]; found {
+				fabricsByClass[class] = append(fabricsByClass[class], key)
+			}
+		}
+	}
+	pendingFabrics := make([]PendingFabric, 0, len(source.PendingFabrics))
+	for _, pending := range source.PendingFabrics {
+		if hasSyncedNodeUID(nodes, pending.OwnerNodeUID) {
+			pendingFabrics = append(pendingFabrics, pending)
+		}
+	}
+	return NewDeviceTopologySnapshot(nodes, devices, localDomains, fabrics, localDomainsByClass, fabricsByClass, pendingFabrics)
+}
+
+func hasSyncedNodeUID(nodes map[string]DeviceTopologyNodeState, uid types.UID) bool {
+	for _, state := range nodes {
+		if state.Identity.UID == uid && state.SyncState == DeviceTopologyNodeSynced {
+			return true
+		}
+	}
+	return false
 }
 
 // CatalogView is the immutable class lookup consumed by canonicalization.

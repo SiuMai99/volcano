@@ -52,7 +52,7 @@ type AnnotationDocument struct {
 // ParseAnnotation strictly decodes one Node annotation into a ReplaceFacts
 // update. It rejects unknown fields, duplicate object keys, trailing data, and
 // over-sized payloads before the Normalizer examines topology semantics.
-func ParseAnnotation(identity ProviderIdentityRef, node api.NodeIdentity, raw string, observedAt, freshUntil time.Time) (ProviderNodeUpdate, error) {
+func ParseAnnotation(identity ProviderIdentityRef, node api.NodeObservation, raw string, observedAt, freshUntil time.Time) (ProviderNodeUpdate, error) {
 	if len(raw) > MaxAnnotationBytes {
 		return ProviderNodeUpdate{}, fmt.Errorf("decode annotation %q: exceeds %d byte limit", AnnotationKey, MaxAnnotationBytes)
 	}
@@ -79,8 +79,8 @@ func ParseAnnotation(identity ProviderIdentityRef, node api.NodeIdentity, raw st
 		ProviderID:          identity.ProviderID,
 		IdentityNamespace:   identity.Namespace,
 		ResourceName:        document.ResourceName,
-		NodeName:            node.Name,
-		NodeUID:             node.UID,
+		NodeName:            node.Identity.Name,
+		NodeUID:             node.Identity.UID,
 		NodeResourceVersion: node.ResourceVersion,
 		SourceGeneration:    document.SourceGeneration,
 		ObservedAt:          observedAt,
@@ -98,13 +98,13 @@ func ParseAnnotation(identity ProviderIdentityRef, node api.NodeIdentity, raw st
 // ClearAnnotation records a valid source observation that this provider has no
 // inventory on the current Node. It is used only after the source has checked
 // for absence; a parse error must never be converted into ClearFacts.
-func ClearAnnotation(identity ProviderIdentityRef, resourceName corev1.ResourceName, node api.NodeIdentity, sourceGeneration uint64, observedAt, freshUntil time.Time) ProviderNodeUpdate {
+func ClearAnnotation(identity ProviderIdentityRef, resourceName corev1.ResourceName, node api.NodeObservation, sourceGeneration uint64, observedAt, freshUntil time.Time) ProviderNodeUpdate {
 	return ProviderNodeUpdate{
 		ProviderID:          identity.ProviderID,
 		IdentityNamespace:   identity.Namespace,
 		ResourceName:        resourceName,
-		NodeName:            node.Name,
-		NodeUID:             node.UID,
+		NodeName:            node.Identity.Name,
+		NodeUID:             node.Identity.UID,
 		NodeResourceVersion: node.ResourceVersion,
 		SourceGeneration:    sourceGeneration,
 		ObservedAt:          observedAt,
@@ -120,13 +120,13 @@ type MockProvider struct {
 }
 
 // Replace constructs a fixture ReplaceFacts update from caller-owned facts.
-func (m MockProvider) Replace(node api.NodeIdentity, sourceGeneration uint64, facts NodeTopologyFacts, observedAt, freshUntil time.Time) ProviderNodeUpdate {
+func (m MockProvider) Replace(node api.NodeObservation, sourceGeneration uint64, facts NodeTopologyFacts, observedAt, freshUntil time.Time) ProviderNodeUpdate {
 	return ProviderNodeUpdate{
 		ProviderID:          m.Identity.ProviderID,
 		IdentityNamespace:   m.Identity.Namespace,
 		ResourceName:        facts.ResourceName,
-		NodeName:            node.Name,
-		NodeUID:             node.UID,
+		NodeName:            node.Identity.Name,
+		NodeUID:             node.Identity.UID,
 		NodeResourceVersion: node.ResourceVersion,
 		SourceGeneration:    sourceGeneration,
 		ObservedAt:          observedAt,

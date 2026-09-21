@@ -35,6 +35,7 @@ import (
 	vcclient "volcano.sh/apis/pkg/client/clientset/versioned"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/topology"
+	"volcano.sh/volcano/pkg/scheduler/topology/provider"
 )
 
 // Cache collects pods/nodes/queues information
@@ -102,6 +103,14 @@ type Cache interface {
 	// manager is owned by the cache/scheduler process and is not started or
 	// stopped by a Session plugin.
 	XPUTopologyManager() topology.ProcessManager
+
+	// ConfigureXPUTopologyFactsIngestor installs the process-scoped Provider
+	// bridge used to publish immutable topology snapshots.
+	ConfigureXPUTopologyFactsIngestor(ingestor *topology.FactsIngestor) error
+
+	// ApplyXPUTopologyUpdate admits one already-parsed Provider observation and
+	// publishes it only when it still matches the current Node identity.
+	ApplyXPUTopologyUpdate(update provider.ProviderNodeUpdate) error
 
 	// IsJobTerminated returns if the job was terminated
 	IsJobTerminated(jobId api.JobID) bool

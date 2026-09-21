@@ -26,7 +26,10 @@ import (
 )
 
 func TestParseAnnotationStrict(t *testing.T) {
-	node := api.NodeIdentity{Name: "node-a", UID: "uid-a", ResourceVersion: "42"}
+	node := api.NodeObservation{
+		Identity:        api.NodeIdentity{Name: "node-a", UID: "uid-a"},
+		ResourceVersion: "42",
+	}
 	identity := ProviderIdentityRef{ProviderID: "annotation-v1", Namespace: "example.test"}
 	valid := `{
   "resourceName":"nvidia.com/gpu",
@@ -41,7 +44,7 @@ func TestParseAnnotationStrict(t *testing.T) {
 	if update.Operation != ReplaceFacts || update.SourceGeneration != 7 || update.Facts == nil {
 		t.Fatalf("ParseAnnotation() = %#v, want replace generation 7", update)
 	}
-	if update.NodeName != node.Name || update.NodeUID != node.UID || update.NodeResourceVersion != node.ResourceVersion {
+	if update.NodeName != node.Identity.Name || update.NodeUID != node.Identity.UID || update.NodeResourceVersion != node.ResourceVersion {
 		t.Fatalf("ParseAnnotation() did not derive Node identity: %#v", update)
 	}
 

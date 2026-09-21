@@ -286,7 +286,7 @@ func (n *Normalizer) normalizeUpdate(update provider.ProviderNodeUpdate) (normal
 	if update.ProviderID != n.capabilities.Identity.ProviderID || update.IdentityNamespace != n.capabilities.Identity.Namespace || update.ResourceName != n.capabilities.ResourceName {
 		return normalizedNode{}, invalidFacts("update ProviderID/namespace/resource does not match fixed provider capability")
 	}
-	node := normalizedNode{identity: api.NodeIdentity{Name: update.NodeName, UID: update.NodeUID, ResourceVersion: update.NodeResourceVersion}}
+	node := normalizedNode{identity: api.NodeIdentity{Name: update.NodeName, UID: update.NodeUID}}
 	if update.Operation == provider.ClearFacts {
 		return node, nil
 	}

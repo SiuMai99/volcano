@@ -46,8 +46,8 @@ func NewFactsIngestor(catalog api.CatalogView, capabilities provider.TopologyPro
 
 // Apply validates that the provider result still belongs to currentNode, then
 // atomically admits it only when node-local and cross-node canonical validation
-// both succeed. A stale Node resourceVersion is rejected by equality only; no
-// numeric ordering is inferred from Kubernetes resourceVersion values.
+// both succeed. NodeResourceVersion is retained as provider observation
+// metadata, but does not change the Node incarnation identity.
 func (i *FactsIngestor) Apply(update provider.ProviderNodeUpdate, currentNode api.NodeIdentity) (provider.ProviderNodeRecord, CanonicalTopology, error) {
 	if err := updateMatchesCurrentNode(update, currentNode); err != nil {
 		return provider.ProviderNodeRecord{}, CanonicalTopology{}, err
@@ -86,11 +86,23 @@ func (i *FactsIngestor) Record(key provider.ProviderNodeKey) (provider.ProviderN
 	return i.tracker.Record(key)
 }
 
+// ForgetNodeObservation retires Provider facts for one Kubernetes Node
+// incarnation. SchedulerCache calls this after it has atomically published a
+// Pending view for a UID replacement or deletion, so a late result cannot
+// poison a later incarnation of the same NodeName. The operation is kept out
+// of SchedulerCache's main lock and performs no scheduling action.
+func (i *FactsIngestor) ForgetNodeObservation(node api.NodeIdentity) (CanonicalTopology, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.tracker.ForgetNodeObservation(node)
+	return i.normalizer.Normalize(i.tracker.Records())
+}
+
 func updateMatchesCurrentNode(update provider.ProviderNodeUpdate, current api.NodeIdentity) error {
-	if update.NodeName != current.Name || update.NodeUID != current.UID || update.NodeResourceVersion != current.ResourceVersion {
+	if update.NodeName != current.Name || update.NodeUID != current.UID {
 		return &FactValidationError{
 			Reason:  NodeObservationOutOfDate,
-			Problem: "provider update no longer matches the current Node name, UID, and resourceVersion",
+			Problem: "provider update no longer matches the current Node name and UID",
 		}
 	}
 	return nil

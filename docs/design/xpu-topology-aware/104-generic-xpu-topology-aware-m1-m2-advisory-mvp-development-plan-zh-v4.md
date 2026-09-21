@@ -61,7 +61,7 @@ DeviceKeys，更不能把结构上的 exact fit 写成运行时 exact allocation
 | JobInfo | `JobInfo.SetPodGroup` 只在初次设置或 `SubGroupPolicy` 变化时重建 SubJobs | 顶层/SubGroup device policy 改变时必须失效 compiled view；不能继续使用旧 SubJob topology |
 | cache snapshot | `SchedulerCache.Snapshot()` 在主锁下 clone Nodes/Jobs/Queues，`ClusterInfo` 尚无 DeviceTopology | topology pointer 必须在同一主锁观察点装入 `ClusterInfo`；plugin 不得二次 snapshot |
 | Session | `openSession` 从一个 `cache.Snapshot()` 填充 Session 字段 | 新增只读 `DeviceTopology` view；每个 Session 固定使用同一 immutable pointer |
-| Node event | Node 事件经 queue 到 `AddOrUpdateNode/RemoveNode`，当前主要按 NodeName 更新 cache | XPU-06 必须比较 Node UID，在同名重建时先使旧 facts 退出候选，再让新 UID 从 Pending 开始 |
+| Node event | Node 事件经 queue 到 `AddOrUpdateNode/RemoveNode`，当前主要按 NodeName 更新 cache | XPU-06 以 `NodeName + NodeUID` 识别 Node incarnation；同 UID 的标签/污点等元数据更新不使 topology 失效，UID 替换或删除才先使旧 facts 退出候选，再让新 UID 从 Pending 开始 |
 | score | `Session.BatchNodeOrderFn` 将各启用 plugin 的 node score 相加 | xPU score 必须有界、确定、可组合；不能覆盖其他 plugin，也不能用 score 实现 hard filter |
 | xPU 实现 | 当前无 V4 gate、plugin、catalog、Provider、snapshot、compiler 或 soft scorer | 每个 PR 只能声明自己新增的能力，文档/fixtures 不算实现 |
 
@@ -284,7 +284,7 @@ catalog 判断。
 - `ReplaceFacts` 是完整替换；`ClearFacts` 是已检查后明确无 inventory；
 - invalid payload 不能完成初次同步，不能覆盖最后有效 facts，也不能刷新 freshness；
 - source generation 单调；同 generation 只允许 content-identical heartbeat；
-- Node `resourceVersion` 只做当前对象相等校验，不做数值排序；
+- Node `resourceVersion` 只作为 Provider 观测元数据和诊断关联，不是 Node identity，也不因同 UID 的元数据更新而使 topology 失效；facts freshness 由 `SourceGeneration + ContentFingerprint` 控制；
 - Provider capability 必须是固定 catalog 的显式子集，不允许 wildcard；
 - Provider 只校验/消费 selected DeviceKeys，不能选择或替换 scheduler plan。
 
@@ -316,8 +316,8 @@ Mock Provider 只用于单元/集成 fixture，不作为生产 runtime 或 exact
 - `pkg/scheduler/api/cluster_info.go` 增加 `DeviceTopology *DeviceTopologySnapshot`；
 - `framework.Session` 保存同一只读 pointer；
 - `SchedulerCache` 持有 topology live state 和 atomic published pointer；
-- Node Add/Update/Delete 在当前 Node cache 临界区内完成轻量 identity invalidation；parse/normalize/closure 在锁外；
-- publish 前重新核对 NodeName/UID/resourceVersion 和 source generation，旧结果直接丢弃；
+- Node Add/Update/Delete 在当前 Node cache 临界区内按 `NodeName + NodeUID` 完成轻量 identity invalidation；同 UID 的普通元数据更新保留 topology，UID 替换/删除才 retire facts；parse/normalize/closure 在锁外；
+- publish 前重新核对 NodeName/UID 和 source generation，旧结果直接丢弃；ResourceVersion 可随 Provider update 携带用于诊断，但不是 publish fence；
 - `SchedulerCache.Snapshot()` 在主锁下 atomic-load 已发布 pointer，不做 parse、RPC 或全量 topology clone；
 - 所有发布的 map/slice/object 不可变；Provider update 构建新对象后交换 pointer；
 - 新 NodeUID 初始为 Pending，不能继承旧 UID facts/readiness；旧 Session pointer 不随新 publish 改变。
@@ -336,6 +336,7 @@ Mock Provider 只用于单元/集成 fixture，不作为生产 runtime 或 exact
 **测试**：
 
 - 同名 Node UID replacement、迟到旧 update/clear、source delete、Fabric owner/member replacement；
+- 同 UID 的 Node label/taint 等 metadata-only update 保留已同步 topology；
 - publish 后修改 source object 不影响旧 snapshot；
 - 并发 Provider update 与 `SchedulerCache.Snapshot()` race；
 - 测试 hook 证明 parse/Provider callback 不在主锁内；
@@ -432,7 +433,7 @@ DeviceID、PodUID 或高基数 Domain/Fabric ID。
 | M1-03 | unknown/conflicting policy | API 或 scheduler authoring reason 明确；不按空 policy 继续 |
 | M1-04 | fixed catalog | 缺失、重复、非法、resource/scope mismatch 整版 NotReady |
 | M1-05 | Provider update | Replace/Clear/generation/freshness/invalid payload 语义正确 |
-| M1-06 | Node replacement | 同名新 UID 为 Pending，旧 facts/assignment 不继承 |
+| M1-06 | Node replacement / metadata update | 同名新 UID 为 Pending，旧 facts/assignment 不继承；同 UID 的 Node metadata update 不清空已同步 facts |
 | M1-07 | Fabric authority | 单 owner 完整声明；member/owner 变化失效；HyperNode 不推导 Fabric |
 | M1-08 | paired snapshot | 不出现新 Node/旧 UID topology；旧 Session immutable |
 | M1-09 | policy update | canonical no-op、semantic mutation 和删除均可持久化；仅未来未调度 Pod 使用新 policy |

@@ -167,8 +167,8 @@ type NodeTopologyFacts struct {
 }
 
 // ProviderNodeUpdate is one observation from a provider. NodeResourceVersion
-// is opaque: consumers only compare it for equality with their current Node
-// observation and must never order it numerically.
+// is opaque source-correlation metadata; it is not part of ProviderNodeKey and
+// must never be used as a topology identity or ordered numerically.
 type ProviderNodeUpdate struct {
 	ProviderID          string
 	IdentityNamespace   string
@@ -321,6 +321,24 @@ func (t *Tracker) Records() []ProviderNodeRecord {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return recordsFromMap(t.records)
+}
+
+// ForgetNodeObservation removes all source records for one retired Kubernetes
+// Node incarnation. ResourceVersion is deliberately ignored: a same-UID Node
+// metadata update must retain its topology facts, while Node UID retirement
+// removes every provider record for that incarnation.
+func (t *Tracker) ForgetNodeObservation(node api.NodeIdentity) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	removed := false
+	for key, record := range t.records {
+		if key.NodeUID == node.UID && record.Update.NodeName == node.Name {
+			delete(t.records, key)
+			removed = true
+		}
+	}
+	return removed
 }
 
 // ContentFingerprint returns a stable digest for a caller-owned canonical

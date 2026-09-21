@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -195,6 +196,14 @@ type SchedulerCache struct {
 	// SchedulerCache literals safe without introducing a package-global manager.
 	xpuTopologyManager     topology.ProcessManager
 	xpuTopologyManagerOnce sync.Once
+
+	// xpuTopologySnapshotCache owns the mutable Node observation fence and the
+	// immutable topology pointer paired with ClusterInfo snapshots. It is
+	// separate from the manager lifecycle so a Session can only observe, never
+	// own, Provider/cache state.
+	xpuTopologySnapshotState     *xpuTopologySnapshotCache
+	xpuTopologySnapshotCacheOnce sync.Once
+	xpuTopologySnapshotEnabled   atomic.Bool
 
 	shardUpdateCoordinator *ShardUpdateCoordinator
 
@@ -1560,6 +1569,10 @@ func (sc *SchedulerCache) Snapshot() *schedulingapi.ClusterInfo {
 		NodeList:             make([]string, len(sc.NodeList)),
 		CSINodesStatus:       make(map[string]*schedulingapi.CSINodeStatusInfo),
 		NodesInShard:         sets.Set[string]{},
+		// The pointer is loaded while SchedulerCache.Mutex is held, at the same
+		// observation point as Nodes/Jobs/Queues. The object it references is
+		// immutable-by-copy and is never cloned or parsed in Snapshot.
+		DeviceTopology: sc.xpuTopologySnapshotLocked(),
 	}
 
 	copy(snapshot.NodeList, sc.NodeList)

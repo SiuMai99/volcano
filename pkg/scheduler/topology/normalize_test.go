@@ -42,8 +42,8 @@ const normalizerCatalog = `{
 
 func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 	ingestor := newTestIngestor(t)
-	nodeA := api.NodeIdentity{Name: "node-a", UID: "uid-a", ResourceVersion: "1"}
-	nodeB := api.NodeIdentity{Name: "node-b", UID: "uid-b", ResourceVersion: "1"}
+	nodeA := api.NodeObservation{Identity: api.NodeIdentity{Name: "node-a", UID: "uid-a"}, ResourceVersion: "1"}
+	nodeB := api.NodeObservation{Identity: api.NodeIdentity{Name: "node-b", UID: "uid-b"}, ResourceVersion: "1"}
 	mock := provider.MockProvider{Identity: testProviderIdentity()}
 	factsA := nodeAFacts(1, 1)
 	if got := factsA.Fabrics[0].Members[0].NodeName; got != "node-b" {
@@ -54,7 +54,7 @@ func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 		t.Fatalf("provider update member NodeName = %q, want node-b", got)
 	}
 
-	_, beforeMembers, err := ingestor.Apply(updateA, nodeA)
+	_, beforeMembers, err := ingestor.Apply(updateA, nodeA.Identity)
 	if err != nil {
 		t.Fatalf("Apply(node-a) error = %v", err)
 	}
@@ -63,11 +63,11 @@ func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 	}
 	changedSameGeneration := nodeAFacts(1, 1)
 	changedSameGeneration.Fabrics[0].Members[0].LocalDomainIDs = []api.SourceDomainID{"different-domain"}
-	if _, _, err := ingestor.Apply(mock.Replace(nodeA, 1, changedSameGeneration, time.Unix(2, 0), time.Unix(100, 0)), nodeA); err == nil {
+	if _, _, err := ingestor.Apply(mock.Replace(nodeA, 1, changedSameGeneration, time.Unix(2, 0), time.Unix(100, 0)), nodeA.Identity); err == nil {
 		t.Fatal("same generation with changed Fabric membership unexpectedly succeeded")
 	}
 
-	_, topology, err := ingestor.Apply(mock.Replace(nodeB, 1, nodeBFacts(), time.Unix(3, 0), time.Unix(100, 0)), nodeB)
+	_, topology, err := ingestor.Apply(mock.Replace(nodeB, 1, nodeBFacts(), time.Unix(3, 0), time.Unix(100, 0)), nodeB.Identity)
 	if err != nil {
 		t.Fatalf("Apply(node-b) error = %v", err)
 	}
@@ -97,7 +97,7 @@ func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 
 	// A member update at a new generation immediately makes the old owner
 	// declaration unavailable. It cannot silently inherit membership.
-	_, topology, err = ingestor.Apply(mock.Replace(nodeB, 2, nodeBFacts(), time.Unix(4, 0), time.Unix(100, 0)), nodeB)
+	_, topology, err = ingestor.Apply(mock.Replace(nodeB, 2, nodeBFacts(), time.Unix(4, 0), time.Unix(100, 0)), nodeB.Identity)
 	if err != nil {
 		t.Fatalf("Apply(node-b generation 2) error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 		t.Fatalf("fabric after member generation change = %#v, want pending", topology)
 	}
 
-	_, topology, err = ingestor.Apply(mock.Replace(nodeA, 2, nodeAFacts(2, 2), time.Unix(5, 0), time.Unix(100, 0)), nodeA)
+	_, topology, err = ingestor.Apply(mock.Replace(nodeA, 2, nodeAFacts(2, 2), time.Unix(5, 0), time.Unix(100, 0)), nodeA.Identity)
 	if err != nil {
 		t.Fatalf("Apply(node-a generation 2) error = %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFactsIngestorNormalizesDomainsAndWaitsForCompleteFabric(t *testing.T) {
 
 func TestFactsIngestorRejectsInvalidAndOutdatedUpdatesWithoutReplacingFacts(t *testing.T) {
 	ingestor := newTestIngestor(t)
-	node := api.NodeIdentity{Name: "node-a", UID: "uid-a", ResourceVersion: "1"}
+	node := api.NodeObservation{Identity: api.NodeIdentity{Name: "node-a", UID: "uid-a"}, ResourceVersion: "1"}
 	mock := provider.MockProvider{Identity: testProviderIdentity()}
 	valid := mock.Replace(node, 1, provider.NodeTopologyFacts{
 		ResourceName: "nvidia.com/gpu",
@@ -126,7 +126,7 @@ func TestFactsIngestorRejectsInvalidAndOutdatedUpdatesWithoutReplacingFacts(t *t
 		},
 		LocalDomains: []provider.LocalDomainFact{{ID: "local-0", DomainClass: "local-scale-up", DeviceIDs: []api.SourceDeviceID{"GPU-0", "GPU-1"}}},
 	}, time.Time{}, time.Time{})
-	if _, _, err := ingestor.Apply(valid, node); err != nil {
+	if _, _, err := ingestor.Apply(valid, node.Identity); err != nil {
 		t.Fatalf("Apply(valid) error = %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestFactsIngestorRejectsInvalidAndOutdatedUpdatesWithoutReplacingFacts(t *t
 	reordered := valid
 	reordered.Facts.Devices[0], reordered.Facts.Devices[1] = reordered.Facts.Devices[1], reordered.Facts.Devices[0]
 	reordered.FreshUntil = time.Unix(30, 0)
-	if _, _, err := ingestor.Apply(reordered, node); err != nil {
+	if _, _, err := ingestor.Apply(reordered, node.Identity); err != nil {
 		t.Fatalf("Apply(reordered heartbeat) error = %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestFactsIngestorRejectsInvalidAndOutdatedUpdatesWithoutReplacingFacts(t *t
 			{ID: "duplicate", Health: api.DeviceHealthy},
 		},
 	}, time.Time{}, time.Time{})
-	if _, _, err := ingestor.Apply(invalid, node); err == nil {
+	if _, _, err := ingestor.Apply(invalid, node.Identity); err == nil {
 		t.Fatal("Apply(duplicate source device) unexpectedly succeeded")
 	} else {
 		var validationErr *FactValidationError
@@ -159,14 +159,19 @@ func TestFactsIngestorRejectsInvalidAndOutdatedUpdatesWithoutReplacingFacts(t *t
 		t.Fatalf("invalid update replaced valid facts: %#v", record)
 	}
 
-	outdated := valid
-	outdated.NodeResourceVersion = "old"
-	if _, _, err := ingestor.Apply(outdated, api.NodeIdentity{Name: node.Name, UID: node.UID, ResourceVersion: "new"}); err == nil {
-		t.Fatal("outdated Node observation unexpectedly succeeded")
+	metadataUpdate := valid
+	metadataUpdate.NodeResourceVersion = "new"
+	if _, _, err := ingestor.Apply(metadataUpdate, node.Identity); err != nil {
+		t.Fatalf("same-UID Node metadata update unexpectedly failed: %v", err)
+	}
+
+	replacedNode := api.NodeIdentity{Name: node.Identity.Name, UID: "uid-replacement"}
+	if _, _, err := ingestor.Apply(valid, replacedNode); err == nil {
+		t.Fatal("different-UID Node observation unexpectedly succeeded")
 	} else {
 		var validationErr *FactValidationError
 		if !errors.As(err, &validationErr) || validationErr.Reason != NodeObservationOutOfDate {
-			t.Fatalf("outdated error = %v, want NodeObservationOutOfDate", err)
+			t.Fatalf("replacement error = %v, want NodeObservationOutOfDate", err)
 		}
 	}
 }
@@ -176,7 +181,7 @@ func TestNormalizerRejectsCyclesAndUnsupportedClass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNormalizer() error = %v", err)
 	}
-	node := api.NodeIdentity{Name: "node-a", UID: "uid-a", ResourceVersion: "1"}
+	node := api.NodeObservation{Identity: api.NodeIdentity{Name: "node-a", UID: "uid-a"}, ResourceVersion: "1"}
 	mock := provider.MockProvider{Identity: testProviderIdentity()}
 	for _, tt := range []struct {
 		name  string
