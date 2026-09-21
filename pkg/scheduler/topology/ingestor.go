@@ -84,16 +84,17 @@ func (i *FactsIngestor) Apply(update provider.ProviderNodeUpdate, currentNode ap
 	if err != nil {
 		return provider.ProviderNodeRecord{}, CanonicalTopology{}, err
 	}
+	var topology CanonicalTopology
 	record, err := i.tracker.Apply(update, fingerprint, func(records []provider.ProviderNodeRecord) error {
-		_, err := i.normalizer.Normalize(records)
+		// Keep the canonical result produced for the prospective tracker state.
+		// Tracker commits the same state immediately after this validator returns,
+		// so Apply can return this result without normalizing all records again.
+		var err error
+		topology, err = i.normalizer.Normalize(records)
 		return err
 	})
 	if err != nil {
 		return provider.ProviderNodeRecord{}, CanonicalTopology{}, err
-	}
-	topology, err := i.normalizer.Normalize(i.tracker.Records())
-	if err != nil {
-		return provider.ProviderNodeRecord{}, CanonicalTopology{}, fmt.Errorf("normalize accepted provider records: %w", err)
 	}
 	return record, topology, nil
 }
