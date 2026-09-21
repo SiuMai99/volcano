@@ -1462,6 +1462,50 @@ func (ji *JobInfo) ContainsNetworkTopology() bool {
 	return ji.WithNetworkTopology() || ji.ContainsNetworkTopologyInSubJob()
 }
 
+// HasDeviceTopologyPolicy reports whether the direct PodGroup authoring path
+// supplied any xPU topology policy at either the PodGroup or SubGroup level.
+// It deliberately does not inspect annotations or inferred workload metadata.
+func (ji *JobInfo) HasDeviceTopologyPolicy() bool {
+	if ji == nil {
+		return false
+	}
+	if !ji.DeviceTopology.Empty() {
+		return true
+	}
+	for _, subJob := range ji.SubJobs {
+		if subJob != nil && !subJob.DeviceTopology.Empty() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasHardDeviceTopologyPolicy reports whether any direct xPU policy asks for
+// hard enforcement. M2 uses this narrow helper as a core no-Bind safety guard;
+// it is not a topology planner and never selects a device.
+func (ji *JobInfo) HasHardDeviceTopologyPolicy() bool {
+	if ji == nil {
+		return false
+	}
+	containsHard := func(spec CanonicalDeviceTopologySpec) bool {
+		for _, policy := range spec.Policies {
+			if policy.Mode == v1beta1.HardDeviceTopologyMode {
+				return true
+			}
+		}
+		return false
+	}
+	if containsHard(ji.DeviceTopology) {
+		return true
+	}
+	for _, subJob := range ji.SubJobs {
+		if subJob != nil && containsHard(subJob.DeviceTopology) {
+			return true
+		}
+	}
+	return false
+}
+
 // DRAResource represents aggregated DRA resource request for a single DeviceClass
 type DRAResource struct {
 	// Count is the total number of devices requested

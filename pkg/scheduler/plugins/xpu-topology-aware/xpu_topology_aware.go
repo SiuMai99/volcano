@@ -19,9 +19,15 @@ package xputopologyaware
 import (
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
+	scheduling "volcano.sh/apis/pkg/apis/scheduling"
+	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 )
@@ -91,20 +97,134 @@ func New(arguments framework.Arguments) framework.Plugin {
 	if !config.Valid() {
 		klog.Warningf("%s plugin has an invalid %s argument; xPU policy will remain fail-closed", PluginName, ProviderArgument)
 	}
-	return &plugin{config: config}
+	return &plugin{config: config, now: time.Now}
 }
 
 type plugin struct {
 	config Config
+	now    func() time.Time
+}
+
+// validationReporter owns only this Session's runtime xPU outcome condition.
+// Authoring conditions remain protected by api.MergePodGroupConditions. The
+// reporter deduplicates repeated JobValid calls so a static compiler failure
+// does not continuously churn PodGroup status timestamps.
+type validationReporter struct {
+	ssn *framework.Session
+
+	mu   sync.Mutex
+	last map[api.JobID]string
+}
+
+func newValidationReporter(ssn *framework.Session) *validationReporter {
+	return &validationReporter{ssn: ssn, last: make(map[api.JobID]string)}
+}
+
+func (r *validationReporter) report(job *api.JobInfo, result *api.ValidateResult) {
+	if r == nil || r.ssn == nil || job == nil || job.PodGroup == nil {
+		return
+	}
+
+	var condition *scheduling.PodGroupCondition
+	stateKey := ""
+	if result != nil && !result.Pass {
+		stateKey = result.Reason + "\x00" + result.Message
+		condition = &scheduling.PodGroupCondition{
+			Type:               scheduling.PodGroupUnschedulableType,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			TransitionID:       string(r.ssn.UID),
+			Reason:             result.Reason,
+			Message:            result.Message,
+		}
+	} else if hasRuntimeXPUBlocker(job.PodGroup.Status.Conditions) {
+		stateKey = api.XPUTopologyResolvedReason
+		condition = &scheduling.PodGroupCondition{
+			Type:               scheduling.PodGroupUnschedulableType,
+			Status:             corev1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			TransitionID:       string(r.ssn.UID),
+			Reason:             api.XPUTopologyResolvedReason,
+		}
+	}
+	if condition == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last[job.UID] == stateKey {
+		return
+	}
+	if err := r.ssn.UpdatePodGroupCondition(job, condition); err != nil {
+		klog.Errorf("Failed to report xPU topology validation for job <%s/%s>: %v", job.Namespace, job.Name, err)
+		return
+	}
+	r.last[job.UID] = stateKey
+}
+
+func hasRuntimeXPUBlocker(conditions []scheduling.PodGroupCondition) bool {
+	for _, condition := range conditions {
+		if condition.Type == scheduling.PodGroupUnschedulableType &&
+			condition.Status == corev1.ConditionTrue &&
+			!api.IsXPUTopologyAuthoringBlocker(condition) &&
+			strings.HasPrefix(condition.Reason, "XPU") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *plugin) Name() string {
 	return PluginName
 }
 
-// OnSessionOpen intentionally installs no scheduler callback in the skeleton.
-// Policy/compiler callbacks belong to the later Public API and snapshot PRs.
-func (p *plugin) OnSessionOpen(_ *framework.Session) {}
+// OnSessionOpen consumes only the immutable DeviceTopology pointer already
+// paired with this Session's SchedulerCache snapshot. It neither starts the
+// process-scoped manager nor reads live Provider state.
+func (p *plugin) OnSessionOpen(ssn *framework.Session) {
+	if ssn == nil {
+		return
+	}
+	compiler := newCompiler(ssn.XPUTopologyManager(), ssn.DeviceTopology, p.now)
+	scorer := newSessionScorer(compiler)
+	reporter := newValidationReporter(ssn)
+
+	ssn.AddJobValidFn(p.Name(), func(obj interface{}) *api.ValidateResult {
+		job, ok := obj.(*api.JobInfo)
+		if !ok {
+			return blocked(api.XPUTopologyPolicyInvalidReason, "xPU topology policy expected *api.JobInfo, got %T", obj)
+		}
+		result := compiler.validateJob(job)
+		reporter.report(job, result)
+		return result
+	})
+	ssn.AddBatchNodeOrderFn(p.Name(), func(task *api.TaskInfo, nodes []*api.NodeInfo) (map[string]float64, error) {
+		job, found := ssn.Jobs[task.Job]
+		if !found {
+			return map[string]float64{}, nil
+		}
+		return scorer.score(task, nodes, job), nil
+	})
+	ssn.AddEventHandler(&framework.EventHandler{
+		AllocateFunc: func(event *framework.Event) {
+			if event == nil || event.Task == nil {
+				return
+			}
+			if job, found := ssn.Jobs[event.Task.Job]; found {
+				scorer.allocated(event.Task, job)
+			}
+		},
+		DeallocateFunc: func(event *framework.Event) {
+			if event == nil || event.Task == nil {
+				return
+			}
+			if job, found := ssn.Jobs[event.Task.Job]; found {
+				scorer.deallocated(event.Task, job)
+			}
+		},
+	})
+}
 
 // OnSessionClose intentionally does not stop or mutate process-scoped state.
 func (p *plugin) OnSessionClose(_ *framework.Session) {}

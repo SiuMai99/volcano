@@ -42,6 +42,10 @@ type xpuTopologySnapshotCache struct {
 	published atomic.Pointer[api.DeviceTopologySnapshot]
 	nodes     map[string]api.DeviceTopologyNodeState
 	ingestor  *topology.FactsIngestor
+	// supportedDomainClasses is the immutable Provider capability declaration
+	// copied at ingestor configuration time. It is not inferred from current
+	// facts, which may legitimately be empty, Pending, or stale.
+	supportedDomainClasses []api.DomainClassKey
 
 	annotationProviderConfigured bool
 	annotationProviderIdentity   provider.ProviderIdentityRef
@@ -83,10 +87,14 @@ func (sc *SchedulerCache) ConfigureXPUTopologyFactsIngestor(ingestor *topology.F
 	state := sc.xpuTopologySnapshotCache()
 	state.updateMu.Lock()
 	defer state.updateMu.Unlock()
-	if state.ingestor != nil && state.ingestor != ingestor {
-		return fmt.Errorf("xpu topology facts ingestor is process-scoped and cannot be replaced")
+	if state.ingestor != nil {
+		if state.ingestor != ingestor {
+			return fmt.Errorf("xpu topology facts ingestor is process-scoped and cannot be replaced")
+		}
+		return nil
 	}
 	state.ingestor = ingestor
+	state.supportedDomainClasses = ingestor.SupportedDomainClasses()
 
 	// Nodes may have been populated before the process-scoped Provider is
 	// configured. Seed them as Pending while holding the same cache lock used
@@ -99,7 +107,9 @@ func (sc *SchedulerCache) ConfigureXPUTopologyFactsIngestor(ingestor *topology.F
 		identity := api.NodeIdentity{Name: name, UID: nodeInfo.Node.UID}
 		state.nodes[name] = api.DeviceTopologyNodeState{Identity: identity, SyncState: api.DeviceTopologyNodePending}
 	}
-	state.published.Store(api.FilterDeviceTopologySnapshot(state.published.Load(), state.nodes))
+	state.published.Store(api.NewDeviceTopologySnapshotWithProviderCapabilities(
+		state.nodes, nil, nil, nil, nil, nil, nil, state.supportedDomainClasses,
+	))
 	sc.xpuTopologySnapshotEnabled.Store(true)
 	sc.Mutex.Unlock()
 	return nil
@@ -131,6 +141,7 @@ func (sc *SchedulerCache) ConfigureXPUTopologyAnnotationProvider(ingestor *topol
 		return fmt.Errorf("xpu topology facts ingestor is process-scoped and cannot be replaced")
 	}
 	state.ingestor = ingestor
+	state.supportedDomainClasses = ingestor.SupportedDomainClasses()
 
 	var refreshes []xpuTopologyAnnotationRefresh
 	sc.Mutex.Lock()
@@ -154,7 +165,9 @@ func (sc *SchedulerCache) ConfigureXPUTopologyAnnotationProvider(ingestor *topol
 			refreshes = append(refreshes, observation)
 		}
 	}
-	state.published.Store(api.FilterDeviceTopologySnapshot(state.published.Load(), state.nodes))
+	state.published.Store(api.NewDeviceTopologySnapshotWithProviderCapabilities(
+		state.nodes, nil, nil, nil, nil, nil, nil, state.supportedDomainClasses,
+	))
 	sc.Mutex.Unlock()
 	state.updateMu.Unlock()
 
@@ -199,7 +212,7 @@ func (sc *SchedulerCache) applyXPUTopologyUpdateLocked(update provider.ProviderN
 		state.beforeIngestorApply()
 	}
 
-	_, canonical, err := state.ingestor.Apply(update, identity.Identity)
+	record, canonical, err := state.ingestor.Apply(update, identity.Identity)
 	if err != nil {
 		return err
 	}
@@ -209,8 +222,9 @@ func (sc *SchedulerCache) applyXPUTopologyUpdateLocked(update provider.ProviderN
 		Identity:         identity.Identity,
 		SyncState:        api.DeviceTopologyNodeSynced,
 		SourceGeneration: update.SourceGeneration,
+		FreshUntil:       record.Update.FreshUntil,
 	}
-	candidate := deviceTopologySnapshotFromCanonical(canonical, candidateNodes)
+	candidate := deviceTopologySnapshotFromCanonical(canonical, candidateNodes, state.supportedDomainClasses)
 
 	sc.Mutex.Lock()
 	current, stillPresent := state.nodes[update.NodeName]
@@ -221,7 +235,7 @@ func (sc *SchedulerCache) applyXPUTopologyUpdateLocked(update provider.ProviderN
 		currentNodes := cloneDeviceTopologyNodeStates(state.nodes)
 		currentNodes[update.NodeName] = candidateNodes[update.NodeName]
 		state.nodes = currentNodes
-		candidate = deviceTopologySnapshotFromCanonical(canonical, currentNodes)
+		candidate = deviceTopologySnapshotFromCanonical(canonical, currentNodes, state.supportedDomainClasses)
 		state.published.Store(candidate)
 	}
 	sc.Mutex.Unlock()
@@ -390,12 +404,12 @@ func (sc *SchedulerCache) xpuTopologySnapshotLocked() *api.DeviceTopologySnapsho
 	return sc.xpuTopologySnapshotCache().published.Load()
 }
 
-func deviceTopologySnapshotFromCanonical(canonical topology.CanonicalTopology, nodes map[string]api.DeviceTopologyNodeState) *api.DeviceTopologySnapshot {
+func deviceTopologySnapshotFromCanonical(canonical topology.CanonicalTopology, nodes map[string]api.DeviceTopologyNodeState, supportedDomainClasses []api.DomainClassKey) *api.DeviceTopologySnapshot {
 	pending := make([]api.PendingFabric, len(canonical.PendingFabrics))
 	for index, fabric := range canonical.PendingFabrics {
 		pending[index] = api.PendingFabric{Key: fabric.Key, OwnerNodeUID: fabric.OwnerNodeUID, Reason: fabric.Reason}
 	}
-	snapshot := api.NewDeviceTopologySnapshot(
+	snapshot := api.NewDeviceTopologySnapshotWithProviderCapabilities(
 		nodes,
 		canonical.Devices,
 		canonical.LocalDomains,
@@ -403,6 +417,7 @@ func deviceTopologySnapshotFromCanonical(canonical topology.CanonicalTopology, n
 		canonical.LocalDomainsByClass,
 		canonical.FabricsByClass,
 		pending,
+		supportedDomainClasses,
 	)
 	return api.FilterDeviceTopologySnapshot(snapshot, nodes)
 }

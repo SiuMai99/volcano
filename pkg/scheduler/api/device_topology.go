@@ -24,6 +24,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -160,6 +161,11 @@ type DeviceTopologyNodeState struct {
 	Identity         NodeIdentity
 	SyncState        DeviceTopologyNodeSyncState
 	SourceGeneration uint64
+	// FreshUntil is copied from the accepted Provider observation. A zero value
+	// means the Provider did not attach an expiry. Consumers must treat an
+	// expired non-zero value as unavailable evidence; it must never cause a
+	// fallback to a different Node incarnation or an inferred topology.
+	FreshUntil time.Time
 }
 
 // PendingFabric is a normalized Fabric declaration that cannot yet be used
@@ -223,9 +229,9 @@ type FabricDomain struct {
 // Provider-owned source objects and later publications cannot alter a Session
 // that already holds this pointer.
 //
-// The snapshot intentionally contains topology facts and readiness only. It
-// does not track allocations, subtract normal Node resources, or encode a
-// scheduler-selected DeviceKey.
+// The snapshot intentionally contains topology facts, readiness, and the
+// Provider's fixed class capability only. It does not track allocations,
+// subtract normal Node resources, or encode a scheduler-selected DeviceKey.
 type DeviceTopologySnapshot struct {
 	Nodes               map[string]DeviceTopologyNodeState
 	Devices             map[DeviceKey]TopologyDevice
@@ -234,6 +240,13 @@ type DeviceTopologySnapshot struct {
 	LocalDomainsByClass map[DomainClassKey][]LocalDomainKey
 	FabricsByClass      map[DomainClassKey][]FabricKey
 	PendingFabrics      []PendingFabric
+	// ProviderCapabilitiesKnown distinguishes a published fixed capability
+	// declaration from an older/unavailable snapshot that cannot make an
+	// unsupported-versus-no-facts decision.
+	ProviderCapabilitiesKnown bool
+	// SupportedProviderDomainClasses is the process-fixed Provider declaration
+	// copied with this snapshot. It is never inferred from observed inventory.
+	SupportedProviderDomainClasses map[DomainClassKey]struct{}
 }
 
 // NewDeviceTopologySnapshot constructs one caller-owned immutable-by-copy
@@ -248,14 +261,52 @@ func NewDeviceTopologySnapshot(
 	fabricsByClass map[DomainClassKey][]FabricKey,
 	pendingFabrics []PendingFabric,
 ) *DeviceTopologySnapshot {
+	return newDeviceTopologySnapshot(nodes, devices, localDomains, fabrics, localDomainsByClass, fabricsByClass, pendingFabrics, false, nil)
+}
+
+// NewDeviceTopologySnapshotWithProviderCapabilities is the immutable-by-copy
+// form used by SchedulerCache once the process-scoped Provider has declared
+// its fixed supported classes. A known empty set remains distinct from an
+// unavailable declaration so consumers can distinguish unsupported classes
+// from absent or stale facts without inferring capability from inventory.
+func NewDeviceTopologySnapshotWithProviderCapabilities(
+	nodes map[string]DeviceTopologyNodeState,
+	devices map[DeviceKey]TopologyDevice,
+	localDomains map[LocalDomainKey]DeviceDomain,
+	fabrics map[FabricKey]FabricDomain,
+	localDomainsByClass map[DomainClassKey][]LocalDomainKey,
+	fabricsByClass map[DomainClassKey][]FabricKey,
+	pendingFabrics []PendingFabric,
+	supportedClasses []DomainClassKey,
+) *DeviceTopologySnapshot {
+	supported := make(map[DomainClassKey]struct{}, len(supportedClasses))
+	for _, class := range supportedClasses {
+		supported[class] = struct{}{}
+	}
+	return newDeviceTopologySnapshot(nodes, devices, localDomains, fabrics, localDomainsByClass, fabricsByClass, pendingFabrics, true, supported)
+}
+
+func newDeviceTopologySnapshot(
+	nodes map[string]DeviceTopologyNodeState,
+	devices map[DeviceKey]TopologyDevice,
+	localDomains map[LocalDomainKey]DeviceDomain,
+	fabrics map[FabricKey]FabricDomain,
+	localDomainsByClass map[DomainClassKey][]LocalDomainKey,
+	fabricsByClass map[DomainClassKey][]FabricKey,
+	pendingFabrics []PendingFabric,
+	providerCapabilitiesKnown bool,
+	supportedProviderDomainClasses map[DomainClassKey]struct{},
+) *DeviceTopologySnapshot {
 	result := &DeviceTopologySnapshot{
-		Nodes:               make(map[string]DeviceTopologyNodeState, len(nodes)),
-		Devices:             make(map[DeviceKey]TopologyDevice, len(devices)),
-		LocalDomains:        make(map[LocalDomainKey]DeviceDomain, len(localDomains)),
-		Fabrics:             make(map[FabricKey]FabricDomain, len(fabrics)),
-		LocalDomainsByClass: make(map[DomainClassKey][]LocalDomainKey, len(localDomainsByClass)),
-		FabricsByClass:      make(map[DomainClassKey][]FabricKey, len(fabricsByClass)),
-		PendingFabrics:      append([]PendingFabric(nil), pendingFabrics...),
+		Nodes:                          make(map[string]DeviceTopologyNodeState, len(nodes)),
+		Devices:                        make(map[DeviceKey]TopologyDevice, len(devices)),
+		LocalDomains:                   make(map[LocalDomainKey]DeviceDomain, len(localDomains)),
+		Fabrics:                        make(map[FabricKey]FabricDomain, len(fabrics)),
+		LocalDomainsByClass:            make(map[DomainClassKey][]LocalDomainKey, len(localDomainsByClass)),
+		FabricsByClass:                 make(map[DomainClassKey][]FabricKey, len(fabricsByClass)),
+		PendingFabrics:                 append([]PendingFabric(nil), pendingFabrics...),
+		ProviderCapabilitiesKnown:      providerCapabilitiesKnown,
+		SupportedProviderDomainClasses: make(map[DomainClassKey]struct{}, len(supportedProviderDomainClasses)),
 	}
 	for name, state := range nodes {
 		result.Nodes[name] = state
@@ -282,6 +333,9 @@ func NewDeviceTopologySnapshot(
 	}
 	for key, fabricKeys := range fabricsByClass {
 		result.FabricsByClass[key] = append([]FabricKey(nil), fabricKeys...)
+	}
+	for class := range supportedProviderDomainClasses {
+		result.SupportedProviderDomainClasses[class] = struct{}{}
 	}
 	return result
 }
@@ -359,7 +413,10 @@ func FilterDeviceTopologySnapshot(source *DeviceTopologySnapshot, nodes map[stri
 			pendingFabrics = append(pendingFabrics, pending)
 		}
 	}
-	return NewDeviceTopologySnapshot(nodes, devices, localDomains, fabrics, localDomainsByClass, fabricsByClass, pendingFabrics)
+	return newDeviceTopologySnapshot(
+		nodes, devices, localDomains, fabrics, localDomainsByClass, fabricsByClass, pendingFabrics,
+		source.ProviderCapabilitiesKnown, source.SupportedProviderDomainClasses,
+	)
 }
 
 func hasSyncedNodeUID(nodes map[string]DeviceTopologyNodeState, uid types.UID) bool {

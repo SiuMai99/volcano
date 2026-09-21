@@ -776,18 +776,19 @@ func (ssn *Session) Pipeline(task *api.TaskInfo, hostname string) error {
 
 // Allocate the task to the node in the session
 func (ssn *Session) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err error) {
+	job, found := ssn.Jobs[task.Job]
+	if !found {
+		return fmt.Errorf("failed to find job %s", task.Job)
+	}
+	if err := ssn.ValidateXPUTopologyBeforeBind(job); err != nil {
+		return err
+	}
+
 	hostname := nodeInfo.Name
 	task.Pod.Spec.NodeName = hostname
 
 	// Only update status in session
-	job, found := ssn.Jobs[task.Job]
-	if found {
-		job.UpdateTaskStatus(task, api.Allocated)
-	} else {
-		klog.Errorf("Failed to find Job <%s> in Session <%s> index when binding.",
-			task.Job, ssn.UID)
-		return fmt.Errorf("failed to find job %s", task.Job)
-	}
+	job.UpdateTaskStatus(task, api.Allocated)
 
 	task.NodeName = hostname
 
@@ -828,6 +829,14 @@ func (ssn *Session) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err er
 }
 
 func (ssn *Session) dispatch(task *api.TaskInfo) error {
+	if job, found := ssn.Jobs[task.Job]; found {
+		if err := ssn.ValidateXPUTopologyBeforeBind(job); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("failed to find job %s", task.Job)
+	}
+
 	bindContext := ssn.CreateBindContext(task)
 	if err := ssn.cache.AddBindTask(bindContext); err != nil {
 		return err

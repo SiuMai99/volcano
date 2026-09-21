@@ -64,6 +64,16 @@ func TestXPUTopologyPairedSnapshotRejectsNodeReplacement(t *testing.T) {
 	if oldSnapshot == nil || oldSnapshot.Nodes[oldNode.Name].SyncState != api.DeviceTopologyNodeSynced || len(oldSnapshot.Devices) != 1 {
 		t.Fatalf("old paired snapshot = %#v, want one synced device", oldSnapshot)
 	}
+	localClass := api.DomainClassKey{ResourceName: "nvidia.com/gpu", Scope: scheduling.DeviceTopologyDomainScopeNode, Name: "local-scale-up"}
+	if !oldSnapshot.ProviderCapabilitiesKnown {
+		t.Fatalf("Provider capabilities were not published with paired snapshot")
+	}
+	if _, found := oldSnapshot.SupportedProviderDomainClasses[localClass]; !found {
+		t.Fatalf("published Provider capabilities omit local class: %#v", oldSnapshot.SupportedProviderDomainClasses)
+	}
+	if got, want := oldSnapshot.Nodes[oldNode.Name].FreshUntil, time.Unix(10, 0); !got.Equal(want) {
+		t.Fatalf("FreshUntil = %v, want %v", got, want)
+	}
 
 	// A same-UID Node metadata update changes ResourceVersion but not the Node
 	// incarnation. Its already valid topology remains paired and usable.

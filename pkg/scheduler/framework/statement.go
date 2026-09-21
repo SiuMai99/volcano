@@ -254,6 +254,12 @@ func (s *Statement) unPipeline(task *api.TaskInfo) error {
 
 // Allocate the task to node
 func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err error) {
+	if job, found := s.ssn.Jobs[task.Job]; found {
+		if err := s.ssn.ValidateXPUTopologyBeforeBind(job); err != nil {
+			return err
+		}
+	}
+
 	defer func() {
 		if err != nil {
 			if rollbackErr := s.unallocate(task); rollbackErr != nil {
@@ -325,6 +331,14 @@ func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err er
 }
 
 func (s *Statement) allocate(task *api.TaskInfo) error {
+	if job, found := s.ssn.Jobs[task.Job]; found {
+		if err := s.ssn.ValidateXPUTopologyBeforeBind(job); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("failed to find job %s", task.Job)
+	}
+
 	bindContext := s.ssn.CreateBindContext(task)
 	if err := s.ssn.cache.AddBindTask(bindContext); err != nil {
 		return err

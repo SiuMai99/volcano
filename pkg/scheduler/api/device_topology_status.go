@@ -24,6 +24,24 @@ import (
 )
 
 const (
+	// XPUTopologyPolicyInvalidReason means that a scheduler-side compiler could
+	// not consume an otherwise persisted typed policy.
+	XPUTopologyPolicyInvalidReason = "XPUTopologyPolicyInvalid"
+	// XPUTopologyDomainClassUnknownReason means the policy class is absent from
+	// the fixed scheduler catalog for its resource and scope.
+	XPUTopologyDomainClassUnknownReason = "XPUTopologyDomainClassUnknown"
+	// XPUTopologyDomainClassUnsupportedReason means a configured Provider
+	// cannot supply the requested known class.
+	XPUTopologyDomainClassUnsupportedReason = "XPUTopologyDomainClassUnsupported"
+	// XPUTopologyDataNotReadyReason means an xPU policy needs topology facts
+	// which have not been published for the observed Node incarnation.
+	XPUTopologyDataNotReadyReason = "XPUTopologyDataNotReady"
+	// XPUTopologyStaleReason means the Provider facts passed their explicit
+	// freshness deadline. Soft policies lose only their preference in this case.
+	XPUTopologyStaleReason = "XPUTopologyStale"
+	// XPUTopologyUnsupportedPodRequestReason means a policy-selected Pod does
+	// not use the M2 single-container, integral request=limit shape.
+	XPUTopologyUnsupportedPodRequestReason = "XPUTopologyUnsupportedPodRequest"
 	// XPUTopologyPolicyConflictReason means an authoring controller found
 	// conflicting policy input. The scheduler must leave this blocker intact
 	// until its author clears it through the PodGroup status subresource.

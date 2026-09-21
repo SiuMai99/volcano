@@ -111,6 +111,16 @@ func (i *FactsIngestor) Record(key provider.ProviderNodeKey) (provider.ProviderN
 	return i.tracker.Record(key)
 }
 
+// SupportedDomainClasses returns the fixed Provider capability declaration
+// copied at construction. It exposes neither source facts nor mutable tracker
+// state and is safe for SchedulerCache to publish with its paired snapshot.
+func (i *FactsIngestor) SupportedDomainClasses() []api.DomainClassKey {
+	if i == nil {
+		return nil
+	}
+	return i.normalizer.SupportedDomainClasses()
+}
+
 // ForgetNodeObservation retires Provider facts for one Kubernetes Node
 // incarnation. SchedulerCache calls this after it has atomically published a
 // Pending view for a UID replacement or deletion, so a late result cannot

@@ -107,6 +107,18 @@ func NewNormalizer(catalog api.CatalogView, capabilities provider.TopologyProvid
 	return &Normalizer{catalog: catalog, capabilities: capabilities, classes: classes}, nil
 }
 
+// SupportedDomainClasses returns a caller-owned copy of the Provider's fixed
+// capability declaration. It is static process configuration, not inferred
+// from current inventory or availability.
+func (n *Normalizer) SupportedDomainClasses() []api.DomainClassKey {
+	if n == nil {
+		return nil
+	}
+	classes := make([]api.DomainClassKey, 0, len(n.capabilities.DomainClasses))
+	classes = append(classes, n.capabilities.DomainClasses...)
+	return classes
+}
+
 // FingerprintUpdate validates all node-local source content and returns its
 // canonical fingerprint. The fingerprint deliberately excludes Node
 // resourceVersion and observation timestamps so content-identical heartbeats
