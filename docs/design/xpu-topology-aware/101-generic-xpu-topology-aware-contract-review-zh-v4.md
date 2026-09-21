@@ -323,7 +323,7 @@ Alpha:
 | gate/plugin activation guard | `pkg/features/volcano_features.go`、`pkg/scheduler/{util,scheduler}.go` | XPU-02/S |
 | catalog/API/canonicalization | `staging/src/volcano.sh/apis/pkg/apis/{scheduling,batch}/`、生成链 | XPU-03/A+S |
 | authoring/activity | `pkg/controllers/podgroup/pg_controller_handler.go`、job controller、admission、PodGroup status | XPU-04/A |
-| Provider/cache/snapshot | `pkg/scheduler/cache/{cache,event_handlers}.go`、`api/cluster_info.go`、`framework/session.go` | XPU-05/06/S |
+| Provider/cache/snapshot/annotation refresh | `pkg/scheduler/cache/{cache,event_handlers}.go`、`api/cluster_info.go`、`framework/session.go` | XPU-05/06/S |
 | Group planning | `framework/session_plugins.go`、`actions/allocate/allocate.go`、Job/SubJob | XPU-08/S |
 | Session-local Group plan/Statement | `actions/allocate/{allocate,recorder}.go`、`framework/statement.go` | XPU-09/S |
 | Pod-derived anchor/assignment annotation | `pkg/scheduler/framework/session.go`、`pkg/scheduler/cache/event_handlers.go`、Pod Bind annotation path | XPU-11/S |

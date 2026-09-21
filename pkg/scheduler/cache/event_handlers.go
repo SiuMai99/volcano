@@ -591,12 +591,16 @@ func (sc *SchedulerCache) AddOrUpdateNode(node *v1.Node) error {
 		sc.NodeList = append(sc.NodeList, node.Name)
 	}
 	retiredNode, topologyNodeChanged := sc.observeXPUTopologyNodeLocked(node)
+	annotationRefresh, annotationChanged := sc.annotationRefreshLocked(node)
 	sc.Mutex.Unlock()
 
 	// Provider tracker cleanup may normalize cross-Node facts, so it must not
 	// run under SchedulerCache.Mutex. The Pending paired pointer is already
 	// visible before this call begins.
 	sc.forgetXPUTopologyNodeObservation(retiredNode, topologyNodeChanged)
+	if annotationChanged {
+		sc.refreshXPUTopologyAnnotation(annotationRefresh)
+	}
 	return nil
 }
 

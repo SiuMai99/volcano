@@ -34,9 +34,23 @@ const (
 	// trusted topology publisher. Workload and scheduler identities must not
 	// receive permission to write it.
 	AnnotationKey = "volcano.sh/xpu-topology"
+	// AnnotationProviderID is the first production Provider identity frozen by
+	// the Alpha contract. Mock Providers may use a test-specific identity.
+	AnnotationProviderID = "nvidia-nvml-v1"
+	// AnnotationProviderNamespace scopes the first production Provider identity.
+	AnnotationProviderNamespace = "nvidia.com"
+	// AnnotationResourceName is the first production resource served by the
+	// Annotation Provider.
+	AnnotationResourceName corev1.ResourceName = "nvidia.com/gpu"
 	// MaxAnnotationBytes bounds strict decoding before allocating the payload.
 	MaxAnnotationBytes = 1 << 20
 )
+
+// AnnotationProviderIdentity returns the trusted identity used by the first
+// production Annotation Provider.
+func AnnotationProviderIdentity() ProviderIdentityRef {
+	return ProviderIdentityRef{ProviderID: AnnotationProviderID, Namespace: AnnotationProviderNamespace}
+}
 
 // AnnotationDocument is the exact strict JSON payload for AnnotationProvider.
 // Node identity is deliberately absent: the provider derives it from the Node

@@ -18,6 +18,7 @@ package cache
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,83 @@ func TestXPUTopologyPairedSnapshotRejectsNodeReplacement(t *testing.T) {
 	deletedSnapshot := sc.Snapshot().DeviceTopology
 	if _, found := deletedSnapshot.Nodes[newNode.Name]; found || len(deletedSnapshot.Devices) != 0 {
 		t.Fatalf("deleted Node retained topology: %#v", deletedSnapshot)
+	}
+}
+
+func TestXPUTopologyAnnotationRefreshReplacesClearsAndPreservesFactsOnError(t *testing.T) {
+	sc := NewDefaultMockSchedulerCache("volcano")
+	ingestor := newTopologyCacheIngestor(t)
+	identity := topologyCacheMock().Identity
+	if err := sc.ConfigureXPUTopologyAnnotationProvider(ingestor, identity); err != nil {
+		t.Fatalf("ConfigureXPUTopologyAnnotationProvider() error = %v", err)
+	}
+
+	node := topologyCacheNode("node-a", "uid-a", "1")
+	node.Annotations = map[string]string{provider.AnnotationKey: topologyCacheAnnotation(1, "gpu-a0", "domain-a")}
+	if err := sc.AddOrUpdateNode(node); err != nil {
+		t.Fatalf("AddOrUpdateNode(initial annotation) error = %v", err)
+	}
+	initial := sc.Snapshot().DeviceTopology
+	if initial.Nodes[node.Name].SyncState != api.DeviceTopologyNodeSynced || len(initial.Devices) != 1 || !hasTopologyCacheDevice(initial, "gpu-a0") {
+		t.Fatalf("initial annotation snapshot = %#v, want synced gpu-a0", initial)
+	}
+
+	metadataOnly := node.DeepCopy()
+	metadataOnly.ResourceVersion = "2"
+	if err := sc.AddOrUpdateNode(metadataOnly); err != nil {
+		t.Fatalf("AddOrUpdateNode(metadata-only annotation update) error = %v", err)
+	}
+	if got := sc.Snapshot().DeviceTopology; got != initial {
+		t.Fatalf("resourceVersion-only update republished topology: initial=%p got=%p", initial, got)
+	}
+
+	replaced := metadataOnly.DeepCopy()
+	replaced.ResourceVersion = "3"
+	replaced.Annotations = map[string]string{provider.AnnotationKey: topologyCacheAnnotation(2, "gpu-a1", "domain-a")}
+	if err := sc.AddOrUpdateNode(replaced); err != nil {
+		t.Fatalf("AddOrUpdateNode(annotation replacement) error = %v", err)
+	}
+	replacedSnapshot := sc.Snapshot().DeviceTopology
+	if replacedSnapshot == initial || replacedSnapshot.Nodes[node.Name].SyncState != api.DeviceTopologyNodeSynced || len(replacedSnapshot.Devices) != 1 || !hasTopologyCacheDevice(replacedSnapshot, "gpu-a1") {
+		t.Fatalf("annotation replacement snapshot = %#v, want synced gpu-a1", replacedSnapshot)
+	}
+
+	invalid := replaced.DeepCopy()
+	invalid.ResourceVersion = "4"
+	invalid.Annotations = map[string]string{provider.AnnotationKey: "{"}
+	if err := sc.AddOrUpdateNode(invalid); err != nil {
+		t.Fatalf("AddOrUpdateNode(invalid annotation) error = %v", err)
+	}
+	if got := sc.Snapshot().DeviceTopology; got != replacedSnapshot || len(got.Devices) != 1 || !hasTopologyCacheDevice(got, "gpu-a1") {
+		t.Fatalf("invalid annotation replaced accepted facts: %#v", got)
+	}
+
+	cleared := invalid.DeepCopy()
+	cleared.ResourceVersion = "5"
+	delete(cleared.Annotations, provider.AnnotationKey)
+	if err := sc.AddOrUpdateNode(cleared); err != nil {
+		t.Fatalf("AddOrUpdateNode(annotation deletion) error = %v", err)
+	}
+	clearedSnapshot := sc.Snapshot().DeviceTopology
+	if clearedSnapshot == replacedSnapshot || clearedSnapshot.Nodes[node.Name].SyncState != api.DeviceTopologyNodeSynced || len(clearedSnapshot.Devices) != 0 {
+		t.Fatalf("annotation deletion snapshot = %#v, want synced empty inventory", clearedSnapshot)
+	}
+}
+
+func TestXPUTopologyAnnotationProviderInitializesExistingNode(t *testing.T) {
+	sc := NewDefaultMockSchedulerCache("volcano")
+	node := topologyCacheNode("node-a", "uid-a", "1")
+	node.Annotations = map[string]string{provider.AnnotationKey: topologyCacheAnnotation(1, "gpu-a0", "domain-a")}
+	if err := sc.AddOrUpdateNode(node); err != nil {
+		t.Fatalf("AddOrUpdateNode() error = %v", err)
+	}
+
+	if err := sc.ConfigureXPUTopologyAnnotationProvider(newTopologyCacheIngestor(t), topologyCacheMock().Identity); err != nil {
+		t.Fatalf("ConfigureXPUTopologyAnnotationProvider() error = %v", err)
+	}
+	snapshot := sc.Snapshot().DeviceTopology
+	if snapshot.Nodes[node.Name].SyncState != api.DeviceTopologyNodeSynced || len(snapshot.Devices) != 1 || !hasTopologyCacheDevice(snapshot, "gpu-a0") {
+		t.Fatalf("existing Node annotation snapshot = %#v, want synced gpu-a0", snapshot)
 	}
 }
 
@@ -264,6 +342,19 @@ func topologyCacheNodeFacts(deviceID api.SourceDeviceID, domainID api.SourceDoma
 		Devices:      []provider.DeviceFact{{ID: deviceID, Health: api.DeviceHealthy}},
 		LocalDomains: []provider.LocalDomainFact{{ID: domainID, DomainClass: "local-scale-up", DeviceIDs: []api.SourceDeviceID{deviceID}}},
 	}
+}
+
+func topologyCacheAnnotation(sourceGeneration uint64, deviceID, domainID string) string {
+	return fmt.Sprintf(`{"resourceName":"nvidia.com/gpu","sourceGeneration":%d,"devices":[{"id":"%s","health":"Healthy"}],"localDomains":[{"id":"%s","domainClass":"local-scale-up","deviceIDs":["%s"]}]}`, sourceGeneration, deviceID, domainID, deviceID)
+}
+
+func hasTopologyCacheDevice(snapshot *api.DeviceTopologySnapshot, deviceID string) bool {
+	for key := range snapshot.Devices {
+		if string(key.ID.Value) == deviceID {
+			return true
+		}
+	}
+	return false
 }
 
 func topologyCacheFabricOwnerFacts() provider.NodeTopologyFacts {

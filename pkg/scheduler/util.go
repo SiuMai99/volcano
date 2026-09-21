@@ -64,8 +64,7 @@ func XPUTopologyPluginConfigured(tiers []conf.Tier) bool {
 
 // XPUTopologyActivationConfig builds the static activation state used by the
 // process manager. Catalog and Provider runtime readiness remain false until
-// their dedicated PRs publish it; this prevents the skeleton from claiming a
-// topology capability it does not implement.
+// the configured cache-side Provider bridge observes its first valid update.
 func XPUTopologyActivationConfig(tiers []conf.Tier) topology.ActivationConfig {
 	options := xputopologyaware.PluginOptions(tiers)
 	pluginConfigReady := len(options) > 0

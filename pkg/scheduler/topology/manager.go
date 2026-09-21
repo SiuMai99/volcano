@@ -16,10 +16,11 @@ limitations under the License.
 
 // Package topology contains process-scoped xPU topology lifecycle primitives.
 //
-// This package deliberately does not discover devices, read a catalog, or
-// register scheduler callbacks. Those concerns are added by later XPU PRs.
-// The manager here only owns activation state and gives the scheduler/cache a
-// single, injectable lifecycle object instead of a package-global singleton.
+// This package deliberately does not discover devices or register scheduler
+// callbacks. The cache-side Provider bridge owns source refresh and snapshot
+// publication; the manager here only owns activation state and gives the
+// scheduler/cache a single, injectable lifecycle object instead of a
+// package-global singleton.
 package topology
 
 import (

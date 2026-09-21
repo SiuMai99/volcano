@@ -43,7 +43,9 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/gate"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
+	xputopologyaware "volcano.sh/volcano/pkg/scheduler/plugins/xpu-topology-aware"
 	"volcano.sh/volcano/pkg/scheduler/topology"
+	"volcano.sh/volcano/pkg/scheduler/topology/provider"
 )
 
 // Scheduler represents a "Volcano Scheduler".
@@ -249,27 +251,45 @@ func (pc *Scheduler) configureXPUTopology(tiers []conf.Tier) {
 		klog.Errorf("xPU topology activation is not reloadable: %v", err)
 		return
 	}
-	if manager.CatalogConfigured() {
-		return
+	if !manager.CatalogConfigured() {
+		path, configured := XPUTopologyCatalogPath(tiers)
+		if !configured {
+			if err := manager.ConfigureCatalog(nil); err != nil {
+				klog.Errorf("xPU topology catalog is not reloadable: %v", err)
+			}
+			return
+		}
+		catalog, err := topology.LoadCatalogFile(path)
+		if err != nil {
+			klog.Errorf("failed to load xPU topology catalog %q: %v", path, err)
+			if configureErr := manager.ConfigureCatalog(nil); configureErr != nil {
+				klog.Errorf("xPU topology catalog is not reloadable: %v", configureErr)
+			}
+			return
+		}
+		if err := manager.ConfigureCatalog(catalog); err != nil {
+			klog.Errorf("xPU topology catalog is not reloadable: %v", err)
+			return
+		}
 	}
 
-	path, configured := XPUTopologyCatalogPath(tiers)
-	if !configured {
-		if err := manager.ConfigureCatalog(nil); err != nil {
-			klog.Errorf("xPU topology catalog is not reloadable: %v", err)
-		}
+	// The Annotation Provider is the first production source. Its parser and
+	// normalizer are process-scoped, while Node event refreshes are owned by the
+	// SchedulerCache and run outside SchedulerCache.Mutex.
+	if !manager.Activation().CanStartManager() || manager.Catalog() == nil {
 		return
 	}
-	catalog, err := topology.LoadCatalogFile(path)
+	options := xputopologyaware.PluginOptions(tiers)
+	if len(options) != 1 || xputopologyaware.ConfigFromPluginOption(options[0]).Provider != xputopologyaware.AnnotationProvider {
+		return
+	}
+	ingestor, err := topology.NewAnnotationFactsIngestor(manager.Catalog())
 	if err != nil {
-		klog.Errorf("failed to load xPU topology catalog %q: %v", path, err)
-		if configureErr := manager.ConfigureCatalog(nil); configureErr != nil {
-			klog.Errorf("xPU topology catalog is not reloadable: %v", configureErr)
-		}
+		klog.Errorf("failed to configure xPU Annotation Provider: %v", err)
 		return
 	}
-	if err := manager.ConfigureCatalog(catalog); err != nil {
-		klog.Errorf("xPU topology catalog is not reloadable: %v", err)
+	if err := pc.cache.ConfigureXPUTopologyAnnotationProvider(ingestor, provider.AnnotationProviderIdentity()); err != nil {
+		klog.Errorf("failed to install xPU Annotation Provider refresh bridge: %v", err)
 	}
 }
 

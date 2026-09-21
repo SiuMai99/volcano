@@ -108,6 +108,11 @@ type Cache interface {
 	// bridge used to publish immutable topology snapshots.
 	ConfigureXPUTopologyFactsIngestor(ingestor *topology.FactsIngestor) error
 
+	// ConfigureXPUTopologyAnnotationProvider installs the production Annotation
+	// Provider refresh bridge. Node events are parsed and published outside the
+	// SchedulerCache main lock.
+	ConfigureXPUTopologyAnnotationProvider(ingestor *topology.FactsIngestor, identity provider.ProviderIdentityRef) error
+
 	// ApplyXPUTopologyUpdate admits one already-parsed Provider observation and
 	// publishes it only when it still matches the current Node identity.
 	ApplyXPUTopologyUpdate(update provider.ProviderNodeUpdate) error

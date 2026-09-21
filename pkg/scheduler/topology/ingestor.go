@@ -27,7 +27,8 @@ import (
 // FactsIngestor composes the provider generation tracker with pure
 // normalization. It is process-scoped provider state, not SchedulerCache: it
 // performs no cache-lock work, does not publish snapshots, and has no
-// scheduling side effects. XPU-06 will wire its result to a paired cache view.
+// scheduling side effects. The cache-side Provider bridge owns the final
+// snapshot publication.
 type FactsIngestor struct {
 	mu         sync.Mutex
 	normalizer *Normalizer
@@ -42,6 +43,30 @@ func NewFactsIngestor(catalog api.CatalogView, capabilities provider.TopologyPro
 		return nil, err
 	}
 	return &FactsIngestor{normalizer: normalizer, tracker: provider.NewTracker()}, nil
+}
+
+// NewAnnotationFactsIngestor constructs the first production Annotation
+// Provider bridge from the fixed scheduler catalog. The provider is limited to
+// the NVIDIA resource and to the catalog classes declared for that resource;
+// it does not infer capabilities from arbitrary catalog entries.
+func NewAnnotationFactsIngestor(catalog *Catalog) (*FactsIngestor, error) {
+	if catalog == nil {
+		return nil, fmt.Errorf("xpu topology catalog is required for Annotation Provider")
+	}
+	var domainClasses []api.DomainClassKey
+	for _, descriptor := range catalog.Descriptors() {
+		if descriptor.ResourceName != provider.AnnotationResourceName {
+			continue
+		}
+		for _, class := range descriptor.Classes {
+			domainClasses = append(domainClasses, class.Key)
+		}
+	}
+	return NewFactsIngestor(catalog, provider.TopologyProviderCapabilities{
+		Identity:      provider.AnnotationProviderIdentity(),
+		ResourceName:  provider.AnnotationResourceName,
+		DomainClasses: domainClasses,
+	})
 }
 
 // Apply validates that the provider result still belongs to currentNode, then

@@ -316,7 +316,7 @@ Mock Provider 只用于单元/集成 fixture，不作为生产 runtime 或 exact
 - `pkg/scheduler/api/cluster_info.go` 增加 `DeviceTopology *DeviceTopologySnapshot`；
 - `framework.Session` 保存同一只读 pointer；
 - `SchedulerCache` 持有 topology live state 和 atomic published pointer；
-- Node Add/Update/Delete 在当前 Node cache 临界区内按 `NodeName + NodeUID` 完成轻量 identity invalidation；同 UID 的普通元数据更新保留 topology，UID 替换/删除才 retire facts；parse/normalize/closure 在锁外；
+- Node Add/Update/Delete 在当前 Node cache 临界区内按 `NodeName + NodeUID` 完成轻量 identity invalidation；同 UID 的普通元数据更新保留 topology，UID 替换/删除才 retire facts；topology annotation 变化在锁外进入 `ParseAnnotation -> ApplyXPUTopologyUpdate`；parse/normalize/closure 在锁外；
 - publish 前重新核对 NodeName/UID 和 source generation，旧结果直接丢弃；ResourceVersion 可随 Provider update 携带用于诊断，但不是 publish fence；
 - `SchedulerCache.Snapshot()` 在主锁下 atomic-load 已发布 pointer，不做 parse、RPC 或全量 topology clone；
 - 所有发布的 map/slice/object 不可变；Provider update 构建新对象后交换 pointer；
@@ -337,6 +337,7 @@ Mock Provider 只用于单元/集成 fixture，不作为生产 runtime 或 exact
 
 - 同名 Node UID replacement、迟到旧 update/clear、source delete、Fabric owner/member replacement；
 - 同 UID 的 Node label/taint 等 metadata-only update 保留已同步 topology；
+- topology annotation 的首次同步、source generation replacement、非法内容保留旧 facts、删除后的 `ClearFacts`；
 - publish 后修改 source object 不影响旧 snapshot；
 - 并发 Provider update 与 `SchedulerCache.Snapshot()` race；
 - 测试 hook 证明 parse/Provider callback 不在主锁内；
@@ -394,7 +395,7 @@ DeviceID、PodUID 或高基数 Domain/Fabric ID。
 | 3 | canonical model and catalog | XPU-03B | canonical keys、policy normalizer/fingerprint、fixed catalog | fixture 稳定；catalog strict fail closed |
 | 4 | PodGroup authoring and status | XPU-04 | CREATE/UPDATE webhook、mutation、JobInfo invalidation、reason ownership | direct PodGroup 唯一路径；blocker 不丢失 |
 | 5 | Provider and Normalizer | XPU-05 | Annotation/Mock contract、canonical facts、Fabric validation | identity/generation/freshness/Fabric 反例通过 |
-| 6 | paired topology snapshot | XPU-06 | live cache、NodeUID invalidation、ClusterInfo/Session view | race/Node replacement/old Session tests |
+| 6 | paired topology snapshot + Annotation refresh | XPU-06 | live cache、NodeUID invalidation、Node annotation `ParseAnnotation -> ApplyXPUTopologyUpdate`、ClusterInfo/Session view | race/Node replacement/annotation replacement-clear-error/old Session tests |
 | 7 | Advisory compiler and scorer | XPU-07A | compiler、soft feasibility/Compact、BatchNodeOrder、overlay | soft 不过滤；hard no Bind；deterministic |
 | 8 | M2 integration and install evidence | XPU-07B | Helm example、Mock facts、direct PodGroup demo、capability note | 从安装到 reason 的可重放证据 |
 
