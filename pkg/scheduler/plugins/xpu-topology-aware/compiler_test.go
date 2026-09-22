@@ -132,6 +132,23 @@ func TestSoftFabricScoreRequiresExplicitProviderMembership(t *testing.T) {
 	}
 }
 
+func TestSoftFabricScoreUsesNodeLocalCapacity(t *testing.T) {
+	now := time.Unix(100, 0)
+	manager := compilerTestManager(t)
+	job, task := compilerTestJob("fabric-local-capacity", scheduling.SoftDeviceTopologyMode, "scale-up-fabric", 2)
+	job.DeviceTopology.Policies[0].DomainClass.Scope = scheduling.DeviceTopologyDomainScopeFabric
+	snapshot := compilerTestFabricSnapshotWithCapacities(map[string]int64{"node-a": 1, "node-b": 3})
+	scorer := newSessionScorer(newCompiler(manager, snapshot, func() time.Time { return now }))
+
+	scores := scorer.score(task, []*api.NodeInfo{{Name: "node-a"}, {Name: "node-b"}}, job)
+	if _, found := scores["node-a"]; found {
+		t.Fatalf("node-a received a Fabric score from aggregate capacity: %#v", scores)
+	}
+	if scores["node-b"] <= 0 {
+		t.Fatalf("node-b did not receive a Fabric score from its local capacity: %#v", scores)
+	}
+}
+
 func TestNoPolicyContributesNoScore(t *testing.T) {
 	now := time.Unix(100, 0)
 	manager := compilerTestManager(t)
@@ -470,7 +487,11 @@ func compilerTestSnapshot(capacities map[string]int64, freshUntil map[string]tim
 }
 
 func compilerTestFabricSnapshot() *api.DeviceTopologySnapshot {
-	snapshot := compilerTestSnapshot(map[string]int64{"node-a": 1, "node-b": 1, "node-c": 1}, nil)
+	return compilerTestFabricSnapshotWithCapacities(map[string]int64{"node-a": 1, "node-b": 1, "node-c": 1})
+}
+
+func compilerTestFabricSnapshotWithCapacities(capacities map[string]int64) *api.DeviceTopologySnapshot {
+	snapshot := compilerTestSnapshot(capacities, nil)
 	class := api.DomainClassKey{ResourceName: compilerTestResource, Scope: scheduling.DeviceTopologyDomainScopeFabric, Name: "scale-up-fabric"}
 	members := make([]api.FabricMember, 0, 2)
 	for _, nodeName := range []string{"node-a", "node-b"} {

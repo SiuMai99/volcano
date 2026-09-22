@@ -226,7 +226,7 @@ func (c *compiler) bestPlacementForNode(policy compiledPolicy, nodeName string) 
 			if !found || fabric.Class != policy.policy.DomainClass || !c.fabricFresh(fabric) || !fabricContainsNode(fabric, nodeName, state.Identity.UID) {
 				continue
 			}
-			capacity := c.fabricHealthyDevices(fabric)
+			capacity := c.fabricHealthyDevicesForNode(fabric, nodeName, state.Identity.UID)
 			if capacity < policy.request {
 				continue
 			}
@@ -328,12 +328,18 @@ func (c *compiler) healthyDevices(keys []api.DeviceKey) int64 {
 	return count
 }
 
-func (c *compiler) fabricHealthyDevices(fabric api.FabricDomain) int64 {
+func (c *compiler) fabricHealthyDevicesForNode(fabric api.FabricDomain, nodeName string, nodeUID types.UID) int64 {
 	keys := make([]api.DeviceKey, 0)
 	for _, member := range fabric.Members {
+		if member.NodeName != nodeName || member.NodeUID != nodeUID {
+			continue
+		}
 		for _, domainKey := range member.LocalDomainKeys {
+			if domainKey.ResourceName != fabric.Key.ResourceName || domainKey.OwnerNodeUID != nodeUID {
+				continue
+			}
 			domain, found := c.snapshot.LocalDomains[domainKey]
-			if !found {
+			if !found || domain.NodeName != nodeName || domain.Key.OwnerNodeUID != nodeUID {
 				continue
 			}
 			keys = append(keys, domain.EffectiveDeviceKeys...)
