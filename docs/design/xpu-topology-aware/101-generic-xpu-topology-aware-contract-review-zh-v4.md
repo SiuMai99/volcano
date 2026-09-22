@@ -3,9 +3,12 @@
 > 基线：[V4 设计](./99-generic-xpu-topology-aware-design-zh-v4.md)与
 > [V4 开发计划](./100-generic-xpu-topology-aware-development-plan-zh-v4.md)。
 >
-> 状态：**实现基线草案，待 maintainer/API/runtime 联合评审**。
+> 状态更新（2026-09-22）：M1/M2 已按该基线在本地落地；本文现在作为 M3 合同基线继续使用。D4/exact assignment bridge 仍为
+> `ProbePending`，Pod-derived hard Alpha 尚未实现；最新实施顺序见
+> [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
 > 本文冻结首个 Alpha 的实现输入，不表示上游已经接受，也不表示功能已经实现。
-> 源码核对日期：2026-09-16；源码基线：`7604cc7d3`，当前文档分支 HEAD 仅增加设计/计划文档。
+> 原始源码核对日期：2026-09-16；原始源码基线：`7604cc7d3`；当时文档分支 HEAD 仅增加设计/计划文档。
+> 当前实现与证据状态以上述 2026-09-22 更新和 M3 开发计划为准。
 
 ## 1. XPU-00 的完成边界
 
@@ -86,21 +89,28 @@ volcano.sh/xpu-assignment
   -> 该 Pod 的 scheduler/provider assignment（resource + canonical DeviceKeys）
 ```
 
-建议的最小 annotation payload：
+M3 目标 annotation 必须覆盖一个 Pod 中多个目标 resource 的完整容器身份。由于当前尚无 production writer，可在 M3-00 直接冻结
+canonical envelope，而不承担已发布数据迁移；`tools/xpu-01` 的早期单 assignment payload 必须同步迁移后才能作为 M3 证据：
 
 ```json
 {
   "version": 1,
-  "resourceName": "nvidia.com/gpu",
-  "provider": "nvidia-nvml-v1",
-  "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+  "assignments": [
+    {
+      "container": {"kind": "regular", "name": "worker"},
+      "resourceName": "nvidia.com/gpu",
+      "provider": "nvidia-nvml-v1",
+      "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+    }
+  ]
 }
 ```
 
 `NodeName` 不重复写入 annotation；`deviceKeys` 必须包含能区分 Node replacement 的 canonical identity，不能只写 GPU index。
-单容器整卡 Alpha 不要求把 `ContainerName` 或完整 plan 写入 annotation。
-annotation 只保留上述四个字段；Domain/Fabric、GroupRef 和 plan digest 等派生信息由当前 snapshot 和 PodGroup 成员重建，
-不进入 Alpha assignment contract。
+Pod 可以包含多个 regular/init/restartable-init container，但每条目标 `resourceName` 只允许一个消费者；每个 assignment 必须持久化
+`ContainerRef(kind/name)`，同一 resource 的重复 assignment、未知 container 或与请求形状不一致均失败。envelope 按
+`resourceName/provider/container.kind/container.name/deviceKeys` canonical 排序。Domain/Fabric、GroupRef 和 plan digest 等派生信息由当前
+snapshot 和 PodGroup 成员重建，不进入 Alpha assignment contract。
 
 Group anchor 是本次 Session 中从这些已绑定成员推导出的内存对象，而不是新的 API 对象：
 
@@ -135,8 +145,9 @@ scheduler leader 负责该调度路径，不设计两个 scheduler 同时更新�
   facts 校验时，才可作为 Alpha 的恢复事实；
 - metrics 和 log 都只能作为可重建的诊断信息；
 - Alpha 不负责外部设备 reservation、release 或跨系统故障对账；
-- 共享/分数设备、MIG/vGPU、DRA Claim 和多 Container 的 Alpha assignment 语义延期，不通过 annotation 猜测；XPU-01 可以复用已有
-  Volcano vGPU Adapter 做独立 L1 exact UUID 证据，但不因此冻结或承诺 Alpha 的 vGPU workload API。
+- 共享/分数设备、MIG/vGPU 和 DRA Claim 的 Alpha assignment 语义延期，不通过 annotation 猜测；多 regular/init/restartable-init
+  container 允许存在，但每条目标 resource 仍只有一个消费者。XPU-01 可以复用已有 Volcano vGPU Adapter 做独立 L1 exact UUID
+  证据，但不因此冻结或承诺 Alpha 的 vGPU workload API。
 
 如果未来需要在 Pod 消失后恢复外部设备状态或增加多 Pod 提交屏障，应另立需求和合同；它们不属于 Alpha，也不作为本合同的实现前置。
 
@@ -202,7 +213,7 @@ Plugin 无法消费或确认 scheduler-selected UUID，则结论为 `XPUAssignme
 | `resourceName` | Kubernetes qualified resource name；必须是扩展资源，不能是 `cpu/memory` |
 | `policies` | 只要求可解析、可 canonicalize、无冲突；具体数量上限由实现阶段按 API server 与对象大小确定，不冻结为跨组件合同 |
 | `podSelector` | 只允许 PodGroup 级 `applyTo=Pod`；Group/SubGroup policy 禁止 |
-| annotation | Alpha canonical policy 只来自 PodGroup typed spec；workload annotation ergonomic 路径延期；assignment annotation 另有最小四字段合同 |
+| annotation | Alpha canonical policy 只来自 PodGroup typed spec；workload annotation ergonomic 路径延期；assignment annotation 使用 Pod 级 `assignments[]` canonical envelope |
 | catalog | 严格、只读、可加载；大小/descriptor 数量只设实现阶段的最小防护，不冻结具体数字 |
 
 同一作用单元中，`resourceName + applyTo + scope + normalized selector` 相同而 `domainClass` 不同是冲突；Alpha 不计算 class 交集，
@@ -288,7 +299,8 @@ Alpha 一个 winning Statement 仍只产生一份最终 placement context，可�
 1. Job-level 和 SubGroup-level policy 先按每个 Task 展开，再求约束交集；同一 Task 只有一个 Node 和一组最终 DeviceKeys；
 2. 一个 Task 可被多个 GroupRef 约束，但不能产生多份互相覆盖的 placement；
 3. `Group + Node`、`Group + Fabric` 各自为所属稳定 Group 保存 class-bearing selection；Pod policy 不建立共享 anchor；
-4. 同 resource 的每个 Pod 只产生一份 assignment annotation；Alpha 不建立跨 backend 的全局 owner；
+4. 每个 Pod 只有一个 `xpu-assignment` envelope；同一 resource 恰有一个 assignment entry，多个 resource 按 canonical 顺序共存；Alpha
+   不建立跨 backend 的全局 owner；
 5. 同一 Group 的已绑定成员必须得到一致的 Domain/Fabric anchor；缺失或冲突时 Group Pending；
 6. Statement 中的普通 Task/Node operation 仍由现有 Statement 管理；Alpha 不增加新的提交事务层；
 7. `SaveOperations/RecoverOperations` 只复制可重建的 Task/Node 试算结果，Group anchor 在新 Session 中从已绑定 Pod 重新推导。
@@ -400,5 +412,6 @@ XPU-00 可以在以下条件满足后从“实现基线草案”转为“已冻�
 - allocate/bind 责任人逐项签核 action 矩阵、Pod annotation 持久路径和旁路行为；
 - 所有 `FrozenForAlpha` 决策均有 owner，所有 `ProbePending` 决策均有对应 XPU-01 证据链接。
 
-以下不阻塞 XPU-00/XPU-01：multiple acceptable classes、真实 Fabric 发布、topology-aware victim selection、DRA、MIG/vGPU workload API、
-multi-container 和 workload start barrier。现有 Volcano vGPU Adapter 的 L1 证据可以作为 D4 的旁证，但不能混入首个 Alpha 的 vGPU 能力声明。
+以下不阻塞 XPU-00/XPU-01：multiple acceptable classes、真实 Fabric 发布、topology-aware victim selection、DRA、MIG/vGPU workload API
+和 workload start barrier。多 regular/init/restartable-init container 已纳入共同请求形状，但每条目标 resource 仍限制为一个消费者。
+现有 Volcano vGPU Adapter 的 L1 证据可以作为 D4 的旁证，但不能混入首个 Alpha 的 vGPU 能力声明。

@@ -8,9 +8,12 @@
 >
 > Provider 探针结论：[XPU-01 L1 分层证据报告](./103-generic-xpu-topology-aware-xpu-01-l1-evidence-report-zh-v4.md)。
 >
-> 状态：**待实施计划**。本文创建开发边界和验收门槛，不表示 XPU-02～07 已实现、已测试或已被社区接受。
+> 状态更新（2026-09-22）：**M1/M2 已在本地分支完成实现与 kind/API server 验证**，实现基线为 `5cd3f7b7e`；安装、RBAC、soft、
+> facts 删除退化和 hard no-Bind 证据见
+> [105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md](./105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md)。这表示本文定义的
+> Advisory MVP 本地验收完成，不表示提交已经推送、合入上游，也不表示 hard topology、exact UUID 或 M3 已完成。
 >
-> 源码复核日期：2026-09-20；本地 HEAD：`0a53d9eee990`。
+> 本文原始源码复核日期为 2026-09-20、HEAD `0a53d9eee990`；第 2 节保留实施前基线，供审查“计划要求与实际落点”差异。
 
 ## 1. 本阶段结论
 
@@ -47,9 +50,9 @@ M2 的 soft score 只表达 topology membership、health 和结构容量形成�
 per-device allocation owner，也不知道 stock kubelet 已把哪些 UUID 分配给其他 Pod，因此不能声明某个 Domain 当前存在精确空闲
 DeviceKeys，更不能把结构上的 exact fit 写成运行时 exact allocation。
 
-## 2. 当前源码基线
+## 2. 实施前源码基线（历史）
 
-以下是本计划引用的当前实现事实，不是拟议接口：
+以下是计划编写时引用的实现事实，不是 2026-09-22 的当前源码状态；当前实现与验收结果见本文状态更新和第 14 节：
 
 | 区域 | 当前事实 | 对 M1/M2 的约束 |
 | --- | --- | --- |
@@ -405,6 +408,19 @@ DeviceID、PodUID 或高基数 Domain/Fabric ID。
 每个 PR 只引入完成本 PR 测试所需的接口。不得先提交空的通用 framework hook、外部 allocation owner、ledger 或 batch binder，等待
 未来代码“可能使用”。
 
+### 6.1 实际落地提交
+
+| 顺序 | 本地提交 | 结果 |
+| --- | --- | --- |
+| 1 | `cb23064c3` | activation skeleton |
+| 2 | `d0467aa6b` | Public API 与生成物 |
+| 3 | `064b9f0ed` | canonical model 与 fixed catalog |
+| 4 | `a85924e1d` | PodGroup authoring/status |
+| 5 | `f70192919` | Provider/Normalizer |
+| 6 | `c3c104885`、`73047d2de`、`00fb94873` | paired snapshot、Annotation refresh 与 normalization 复用 |
+| 7 | `36ef3714b`、`2d78d2a94`、`49a1887a7` | Advisory compiler/scorer、multi-container/init 请求形状、Node-local Fabric capacity |
+| 8 | `d0cae4e77`、`5cd3f7b7e` | Helm/kind 集成、RBAC、运行证据与 Annotation refresh 日志 |
+
 ## 7. 估算与人员安排
 
 沿用总体计划的工作包估算，XPU-02～07 剩余实现约 **32～48 工程人日**：
@@ -493,8 +509,8 @@ go test -race ./pkg/scheduler/cache ./pkg/scheduler/topology/... ./pkg/scheduler
 go test ./pkg/webhooks/admission/podgroups/... ./pkg/controllers/podgroup ./pkg/scheduler/api
 ```
 
-这些新 package/测试命令是实现后的目标入口，不表示当前已经存在。schema pruning、feature-gate 安装和 M2 演示必须在真实 API
-server/kind 上补证据；静态 CRD diff、Fake client 或 Markdown 检查不能替代运行验收。
+这些 package/测试命令已经成为当前实现的验证入口。schema pruning、feature-gate 安装和 M2 演示仍必须由真实 API server/kind
+证据支持；静态 CRD diff、Fake client 或 Markdown 检查不能替代运行验收。
 
 ## 10. 首两周建议
 
@@ -542,6 +558,23 @@ server/kind 上补证据；静态 CRD diff、Fake client 或 Markdown 检查不�
 
 ## 13. 文档完成与代码完成的区分
 
-本文完成后，只能说明 XPU-02～07 的实施边界、顺序和验收已经可评审。只有对应代码、生成物、单元/race/API-server/kind 证据
-全部落地后，才可以分别标记 M1 或 M2 完成。M1 完成不等于用户可用调度功能；M2 完成也不等于 hard topology、exact UUID 或
-Pod-derived Topology Alpha 完成。
+本文最初完成时只能说明 XPU-02～07 的实施边界、顺序和验收可评审。到 2026-09-22，对应代码、生成物、聚焦测试和
+API-server/kind 证据已经在本地分支落地，因此本地 M1/M2 可以标记完成。M1 完成不等于用户可用调度功能；M2 完成也不等于 hard
+topology、exact UUID 或 Pod-derived Topology Alpha 完成。
+
+## 14. M1/M2 交付收尾记录
+
+收尾复核以实现基线 `5cd3f7b7e` 为准：
+
+- `go test -race ./pkg/scheduler/api ./pkg/scheduler/cache ./pkg/scheduler/framework ./pkg/scheduler/plugins/xpu-topology-aware ./pkg/webhooks/admission/podgroups/validate` 通过；
+- `make verify` 通过；
+- 刷新 `_output/release` 后，`TAG=latest RELEASE_DIR=_output/release make verify-generated-yaml` 通过；
+- `bash hack/verify-xpu-topology-aware-helm.sh` 通过，默认 render 不启用 xPU，opt-in render 包含双进程 gate、plugin、catalog mount 与 `podgroups/status` RBAC；
+- kind `volcano-gpu-mvp` 中 direct PodGroup typed field 经 API server round-trip 保留，scheduler ServiceAccount 对
+  `podgroups/status` 的 `update/patch` 均为 `yes`；
+- soft fixture 选择 structural exact-fit Node；hard fixture 无 `spec.nodeName`、无 `volcano.sh/xpu-assignment`，PodGroup reason 为
+  `XPUAssignmentNotEnforceable`；
+- scheduler 日志确认 Annotation observation 以 `ReplaceFacts`/`ClearFacts` 发布到 snapshot。
+
+当前分支仍领先远端对应分支 8 个提交，尚未完成 push/community review。M3 开发边界见
+[106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。

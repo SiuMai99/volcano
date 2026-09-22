@@ -1397,20 +1397,27 @@ type TopologyPlacementPlan struct {
 }
 ~~~
 
-Alpha 中每个目标 resource 的 `Assignments` 恰有一项。Bind 前由 scheduler 将其压缩为受控 Pod annotation：
+Alpha 中每个目标 resource 的 `Assignments` 恰有一项。一个 Pod 可以有多条目标 resource，因此 Bind 前由 scheduler 将完整
+`Assignments` 压缩为一个受控、canonical 的 Pod annotation envelope：
 
 ~~~json
 {
   "version": 1,
-  "container": {"kind": "regular", "name": "worker"},
-  "resourceName": "nvidia.com/gpu",
-  "provider": "nvidia-nvml-v1",
-  "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+  "assignments": [
+    {
+      "container": {"kind": "regular", "name": "worker"},
+      "resourceName": "nvidia.com/gpu",
+      "provider": "nvidia-nvml-v1",
+      "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+    }
+  ]
 }
 ~~~
 
-Provider/Device Plugin 至少必须能消费或确认 `DeviceKeys`，并保持该 annotation 在已绑定 Pod 上可读。重建 anchor 时使用
-PodUID、Pod `spec.nodeName`、NodeUID、ResourceName、Provider 和 DeviceKeys；任何 NodeUID/DeviceKey 不一致都使 Group Pending。
+`assignments` 按 `resourceName/provider/container.kind/container.name/deviceKeys` canonical 排序；同一 resource 重复项、未知 ContainerRef、
+空或重复 DeviceKey 都无效。Provider/Device Plugin 至少必须能消费或确认 `DeviceKeys`，并保持该 annotation 在已绑定 Pod 上可读。
+重建 anchor 时使用 PodUID、Pod `spec.nodeName`、NodeUID、ContainerRef、ResourceName、Provider 和 DeviceKeys；任何
+NodeUID/ContainerRef/DeviceKey 不一致都使 Group Pending。
 assignment annotation 不附带 `localDomainKeys`、`fabricKeys`、`groupRef` 或 `planDigest` 等派生字段。planner 只返回满足
 当前 policy 的 NodeUID、DeviceKeys 和必要的 GroupRef；Bind 前重新校验这些引用，不能由 Provider 或后续 callback 重选 ID。
 
@@ -1827,7 +1834,8 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
   hard/soft Public API and internal deterministic Compact
   one PodGroup canonicalization path
   quiescent-only policy mutation
-  single-container whole-device Pod-derived Topology Alpha
+  multi-container/init request shape with one consumer per target resource
+  whole-device Pod-derived Topology Alpha with complete ContainerRef assignment
   scheduler-owned xpu-assignment Pod annotation
   Session-local PodDerivedGroupAnchor rebuilt from bound Pods
   single active scheduler leader

@@ -1,5 +1,9 @@
 # Volcano 通用 xPU 拓扑感知调度 V4：XPU-01 L1 分层证据报告
 
+> M3 对齐说明（2026-09-22）：本报告保存的单 assignment payload 是 XPU-01 探针历史证据，不是 M3 production serialization。
+> M3 使用包含 ContainerRef 的 Pod 级 `assignments[]` canonical envelope，且必须另行证明 API Pod 持久化、selected DeviceKey 与 kubelet
+> DeviceID 对账；见 [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
+
 > 关联合同：[XPU-00 合同冻结记录](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
 >
 > 实施计划：[XPU-01 Provider identity 探针实施计划](./102-generic-xpu-topology-aware-xpu-01-provider-identity-probe-plan-zh-v4.md)。

@@ -6,9 +6,14 @@
 >
 > 状态：**实施计划，尚未表示 XPU-01 已完成**。
 > 本文只规划探针、证据和能力差距输出，不新增 scheduler plugin、CRD、跨系统 allocation owner 或多 Pod 事务层。
-> 计划基线：2026-09-17；当前仓库尚无 V4 Provider、topology manager 或 `xpu-assignment` Go 实现。
+> 原始计划基线：2026-09-17；当时仓库尚无 V4 Provider、topology manager 或 `xpu-assignment` Go 实现。
+> 当前仓库已有 M1/M2 Provider 与 topology manager，但仍无 production `xpu-assignment` writer；以本文后述 M3 对齐说明为准。
 >
 > 范围修订（2026-09-20）：保留 stock NVIDIA Device Plugin 的兼容性负例，同时增加现有 Volcano vGPU/HAMi Adapter 的独立 L1 验证轨道。vGPU 轨道使用 `deviceSplitCount=1` 的单槽位实验配置，不改变 XPU-00 对 Alpha 不支持 GPU 虚拟化请求的原始边界。
+>
+> M3 对齐说明（2026-09-22）：本文的单 assignment 顶层 JSON 是 XPU-01 探针历史格式。M3 对多
+> regular/init/restartable-init container 与多目标 resource 使用 Pod 级 `assignments[]` canonical envelope；迁移要求和放行门见
+> [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。本文历史证据不因此升级为 production assignment contract。
 
 ## 1. 目标与完成边界
 

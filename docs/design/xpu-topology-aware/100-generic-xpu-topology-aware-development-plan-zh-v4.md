@@ -2,8 +2,14 @@
 
 > 基线：[V4 设计](./99-generic-xpu-topology-aware-design-zh-v4.md)。本计划只细化其中的 Alpha 范围，不纳入独立的跨系统事务、外部设备生命周期或多 Pod 原子提交需求。
 >
-> 状态：待实施计划；任务均未因本文创建而完成。源码核对日期：2026-09-16；本地 HEAD：`7604cc7d3`。
-> 下文“现有”指本地 checkout，“新增/建议”指拟开发内容，不代表上游已经接受。
+> 状态更新（2026-09-22）：本地分支已完成 M1/XPU-02～06 与 M2/XPU-07 Advisory MVP，并在 kind/API server 完成安装、soft
+> preference、facts 删除退化和 hard no-Bind 验证；实现基线为 `5cd3f7b7e`。运行证据见
+> [M2 安装与运行证据](./105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md)。本地完成不表示这些提交已经推送、合入上游或成为
+> 发布能力；M3 仍未实现，实施计划见
+> [M3 Pod-derived Topology Alpha 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
+>
+> 原始计划基线为 2026-09-16、HEAD `7604cc7d3`。下文的“当前源码基线”和“拟新增”描述保留其历史规划语境；判断现状时以
+> 上述状态更新、当前源码和对应运行证据为准。
 >
 > 范围修订（2026-09-20）：原始 Alpha 仍不把 GPU 虚拟化请求形状纳入产品能力；为提前验证 exact UUID 后端，XPU-01 增加一个复用现有 Volcano vGPU/HAMi Adapter 的 L1 证据轨道。该轨道是验证配置，不改变 Alpha 的 vGPU/MIG 支持范围，也不替代后续原生 NVIDIA Device Plugin exact-ID 方案。
 >
@@ -197,6 +203,9 @@ M2 所需 XPU-00～07 约 **39～59 人日**，其中包含提前执行的 Provi
 详细实施顺序、PR 拆分和验收门槛见
 [104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md](./104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md)。
 
+> 实施状态：本地 M1/M2 已按 XPU-02～07 完成；M2 仍只提供 soft Advisory，所有 hard policy 保持 fail closed。安装与运行证据见
+> [105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md](./105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md)。
+
 ### XPU-02：激活与进程生命周期
 
 **落点**：现有 `pkg/features/volcano_features.go`、`pkg/scheduler/{util,scheduler}.go`、
@@ -295,6 +304,10 @@ Alpha 只验证 Pod-derived anchor 的失效与 Pending，不管理外部设备 
 这一阶段完成首个可用的 hard topology Alpha：Group anchor 从已绑定 Pod 的 `spec.nodeName` 与
 `volcano.sh/xpu-assignment` annotation 恢复，复用现有 Statement 与逐 Pod Bind。它不承诺跨系统设备生命周期或多 Pod Bind 原子回滚。
 
+> 实施状态：待开发。以下总体工作包已细化为
+> [M3 Pod-derived Topology Alpha 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)；在 XPU-01B
+> 证明 selected DeviceKey 可被执行/确认、assignment 可持久化并恢复前，不得把 `AssignmentContractReady` 置为生产可用。
+
 ### XPU-08：allocate 内部 side-effect-free Group planner
 
 **落点**：新增 plugin 私有 planner/model 包，在 `allocate` 的 winning Statement 路径调用；不扩展通用 framework 注册合同，不接管 gang readiness。
@@ -329,8 +342,9 @@ Alpha 只验证 Pod-derived anchor 的失效与 Pending，不管理外部设备 
 **落点**：`pkg/scheduler/framework/session.go` 的 Session/HyperNode 恢复路径、Pod Bind annotation 传递路径、Pod/Node cache event 与
 新增 topology model/provider 包；不新增 PodGroup status 字段作为唯一事实源。
 
-- 定义 scheduler-owned `volcano.sh/xpu-assignment` 最小 JSON：`version`、`resourceName`、`provider`、canonical `deviceKeys`；不加入
-  无消费者的 Domain/Fabric/Group/plan 派生字段。
+- 定义 scheduler-owned `volcano.sh/xpu-assignment` canonical envelope：每条目标 resource 恰有一个 assignment，包含
+  `ContainerRef(kind/name)`、`resourceName`、`provider` 和 canonical `deviceKeys`；不加入无消费者的
+  Domain/Fabric/Group/plan 派生字段。
 - 使用已绑定/运行 Pod 的 `spec.nodeName` 作为 Node placement；`deviceKeys` 必须包含 NodeUID-safe identity，不能只使用 GPU index。
 - 从 `AllocatedStatus` 且 `NodeName` 非空的成员 Pod 解析 annotation，并用同一 immutable topology snapshot 映射 LocalDomain/Fabric。
 - `Group + Node` 要求所有已绑定成员位于同一 LocalDomain；`Group + Fabric` 要求成员存在共同 Fabric；缺失、冲突或无法映射时 hard Pending。
