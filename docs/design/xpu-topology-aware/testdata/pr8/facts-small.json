@@ -1,0 +1,14 @@
+{
+  "resourceName": "nvidia.com/gpu",
+  "sourceGeneration": 200,
+  "devices": [
+    {"id": "GPU-pr8-small-0", "health": "Healthy"}
+  ],
+  "localDomains": [
+    {
+      "id": "pr8-small-local",
+      "domainClass": "local-scale-up",
+      "deviceIDs": ["GPU-pr8-small-0"]
+    }
+  ]
+}

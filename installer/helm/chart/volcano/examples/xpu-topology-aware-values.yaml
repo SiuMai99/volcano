@@ -1,0 +1,43 @@
+# Explicit opt-in profile for the M2 xPU topology Advisory MVP.
+#
+# This is intentionally an example, not a default. It enables both admission
+# and scheduler gates, mounts a fixed catalog, and adds the xPU plugin to the
+# scheduler's normal node-order tier. Update image settings for the target
+# cluster before installing.
+custom:
+  scheduler_feature_gates: XPUTopologyAwareScheduling=true
+  admission_feature_gates: XPUTopologyAwareScheduling=true
+  xpu_topology_catalog: |
+    {
+      "resources": [
+        {
+          "resourceName": "nvidia.com/gpu",
+          "description": "PR8 fixture catalog; structural topology only",
+          "domainClasses": [
+            {"scope": "Node", "name": "local-scale-up"},
+            {"scope": "Fabric", "name": "scale-up-fabric"}
+          ]
+        }
+      ]
+    }
+  scheduler_config_override: |
+    actions: "enqueue, allocate, backfill"
+    tiers:
+    - plugins:
+      - name: priority
+      - name: gang
+        enablePreemptable: false
+      - name: conformance
+    - plugins:
+      - name: overcommit
+      - name: drf
+        enablePreemptable: false
+      - name: predicates
+      - name: proportion
+      - name: nodeorder
+      - name: binpack
+      - name: xpu-topology-aware
+        enableNodeOrder: true
+        arguments:
+          xpu-topology.provider: annotation
+          xpu-topology.catalog: /volcano.xpu/catalog.json

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pr8-soft
+  namespace: default
+  annotations:
+    scheduling.k8s.io/group-name: pr8-soft
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: worker
+    image: registry.k8s.io/pause:3.10
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+      requests:
+        nvidia.com/gpu: 1

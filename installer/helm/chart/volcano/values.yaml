@@ -294,6 +294,16 @@ custom:
   scheduler_feature_gates: ~
   admission_feature_gates: ~
 
+  # xpu_topology_catalog is an optional, scheduler-local catalog for the
+  # xpu-topology-aware plugin. When set, Helm creates a ConfigMap and mounts
+  # catalog.json at /volcano.xpu/catalog.json. The scheduler configuration
+  # must explicitly reference that path and opt in to the plugin; leaving this
+  # value unset preserves the default disabled behavior.
+  #
+  # The catalog is read once at scheduler process startup. Changing it
+  # requires a scheduler restart and is deliberately not a config reload API.
+  xpu_topology_catalog: ~
+
 # Specify options for scheduler sharding
   agent_scheduler_sharding_mode: ~
   agent_scheduler_sharding_name: ~

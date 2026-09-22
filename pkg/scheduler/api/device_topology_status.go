@@ -17,6 +17,8 @@ limitations under the License.
 package api
 
 import (
+	"strings"
+
 	v1 "k8s.io/api/core/v1"
 
 	"volcano.sh/apis/pkg/apis/scheduling"
@@ -72,6 +74,24 @@ func MayReplaceXPUTopologyAuthoringBlocker(next scheduling.PodGroupCondition) bo
 		next.Reason == XPUTopologyResolvedReason
 }
 
+// isXPUTopologyRuntimeBlocker reports an active scheduler-owned xPU outcome.
+// Unlike authoring blockers, another xPU outcome may supersede it, but a
+// generic gang condition must not hide it before the API status writer runs.
+func isXPUTopologyRuntimeBlocker(condition scheduling.PodGroupCondition) bool {
+	return condition.Type == scheduling.PodGroupUnschedulableType &&
+		condition.Status == v1.ConditionTrue &&
+		strings.HasPrefix(condition.Reason, "XPU") &&
+		!IsXPUTopologyAuthoringBlocker(condition)
+}
+
+func mayReplaceXPUTopologyRuntimeBlocker(next scheduling.PodGroupCondition) bool {
+	if next.Type != scheduling.PodGroupUnschedulableType {
+		return false
+	}
+	return (next.Status == v1.ConditionTrue && strings.HasPrefix(next.Reason, "XPU")) ||
+		(next.Status == v1.ConditionFalse && next.Reason == XPUTopologyResolvedReason)
+}
+
 // MergePodGroupConditions preserves conditions that an updater did not own
 // while applying one desired condition per type. In particular, an active xPU
 // authoring blocker wins over a dynamic scheduler Unschedulable reason.
@@ -82,7 +102,10 @@ func MergePodGroupConditions(current, desired []scheduling.PodGroupCondition) []
 		for i, existing := range merged {
 			if existing.Type == next.Type {
 				index = i
-				if IsXPUTopologyAuthoringBlocker(existing) && !MayReplaceXPUTopologyAuthoringBlocker(next) {
+				switch {
+				case IsXPUTopologyAuthoringBlocker(existing) && !MayReplaceXPUTopologyAuthoringBlocker(next):
+					index = -2
+				case isXPUTopologyRuntimeBlocker(existing) && !mayReplaceXPUTopologyRuntimeBlocker(next):
 					index = -2
 				}
 				break
@@ -121,7 +144,10 @@ func MergePodGroupStatusV1beta1(current, desired schedulingv1beta1.PodGroupStatu
 				continue
 			}
 			index = i
-			if isXPUTopologyAuthoringBlockerV1beta1(existing) && !mayReplaceXPUTopologyAuthoringBlockerV1beta1(next) {
+			switch {
+			case isXPUTopologyAuthoringBlockerV1beta1(existing) && !mayReplaceXPUTopologyAuthoringBlockerV1beta1(next):
+				index = -2
+			case isXPUTopologyRuntimeBlockerV1beta1(existing) && !mayReplaceXPUTopologyRuntimeBlockerV1beta1(next):
 				index = -2
 			}
 			break
@@ -147,4 +173,19 @@ func isXPUTopologyAuthoringBlockerV1beta1(condition schedulingv1beta1.PodGroupCo
 func mayReplaceXPUTopologyAuthoringBlockerV1beta1(next schedulingv1beta1.PodGroupCondition) bool {
 	return next.Type == schedulingv1beta1.PodGroupUnschedulableType &&
 		next.Status == v1.ConditionFalse && next.Reason == XPUTopologyResolvedReason
+}
+
+func isXPUTopologyRuntimeBlockerV1beta1(condition schedulingv1beta1.PodGroupCondition) bool {
+	return condition.Type == schedulingv1beta1.PodGroupUnschedulableType &&
+		condition.Status == v1.ConditionTrue &&
+		strings.HasPrefix(condition.Reason, "XPU") &&
+		!isXPUTopologyAuthoringBlockerV1beta1(condition)
+}
+
+func mayReplaceXPUTopologyRuntimeBlockerV1beta1(next schedulingv1beta1.PodGroupCondition) bool {
+	if next.Type != schedulingv1beta1.PodGroupUnschedulableType {
+		return false
+	}
+	return (next.Status == v1.ConditionTrue && strings.HasPrefix(next.Reason, "XPU")) ||
+		(next.Status == v1.ConditionFalse && next.Reason == XPUTopologyResolvedReason)
 }

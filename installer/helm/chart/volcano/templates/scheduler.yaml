@@ -5,6 +5,23 @@
 {{ $scheduler_main_csc := or .Values.custom.scheduler_main_csc .Values.custom.default_csc }}
 {{ $scheduler_ns := or .Values.custom.scheduler_ns .Values.custom.default_ns }}
 {{ $scheduler_name := .Values.custom.scheduler_name }}
+{{ $xpu_topology_catalog := .Values.custom.xpu_topology_catalog }}
+{{- if $xpu_topology_catalog }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-xpu-topology-catalog
+  namespace: {{ .Release.Namespace }}
+  {{- if .Values.custom.common_labels }}
+  labels:
+    {{- toYaml .Values.custom.common_labels | nindent 4 }}
+  {{- end }}
+data:
+  catalog.json: |
+    {{- $xpu_topology_catalog | nindent 4 }}
+{{- end }}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -94,7 +111,10 @@ rules:
     verbs: ["update"]
   - apiGroups: ["scheduling.incubator.k8s.io", "scheduling.volcano.sh"]
     resources: ["podgroups"]
-    verbs: ["list", "watch", "update"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["scheduling.incubator.k8s.io", "scheduling.volcano.sh"]
+    resources: ["podgroups/status"]
+    verbs: ["update", "patch"]
   - apiGroups: ["nodeinfo.volcano.sh"]
     resources: ["numatopologies"]
     verbs: ["get", "list", "watch", "delete"]
@@ -266,6 +286,11 @@ spec:
           volumeMounts:
             - name: scheduler-config
               mountPath: /volcano.scheduler
+            {{- if $xpu_topology_catalog }}
+            - name: xpu-topology-catalog
+              mountPath: /volcano.xpu
+              readOnly: true
+            {{- end }}
             - name: klog-sock
               mountPath: /tmp/klog-socks
           {{- if $scheduler_main_csc }}
@@ -276,6 +301,11 @@ spec:
         - name: scheduler-config
           configMap:
             name: {{ .Release.Name }}-scheduler-configmap
+        {{- if $xpu_topology_catalog }}
+        - name: xpu-topology-catalog
+          configMap:
+            name: {{ .Release.Name }}-xpu-topology-catalog
+        {{- end }}
         - name: klog-sock
           emptyDir: {}
 ---

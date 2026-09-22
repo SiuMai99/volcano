@@ -53,6 +53,34 @@ func TestMergePodGroupConditionsPreservesXPUTopologyBlocker(t *testing.T) {
 	}
 }
 
+func TestMergePodGroupConditionsPreservesXPUTopologyRuntimeBlocker(t *testing.T) {
+	runtime := scheduling.PodGroupCondition{
+		Type:   scheduling.PodGroupUnschedulableType,
+		Status: corev1.ConditionTrue,
+		Reason: "XPUAssignmentNotEnforceable",
+	}
+	dynamic := scheduling.PodGroupCondition{
+		Type:   scheduling.PodGroupUnschedulableType,
+		Status: corev1.ConditionTrue,
+		Reason: "NotEnoughResources",
+	}
+
+	merged := MergePodGroupConditions([]scheduling.PodGroupCondition{runtime}, []scheduling.PodGroupCondition{dynamic})
+	if len(merged) != 1 || merged[0].Reason != runtime.Reason {
+		t.Fatalf("dynamic result overwrote xPU runtime blocker: %#v", merged)
+	}
+
+	resolved := scheduling.PodGroupCondition{
+		Type:   scheduling.PodGroupUnschedulableType,
+		Status: corev1.ConditionFalse,
+		Reason: XPUTopologyResolvedReason,
+	}
+	merged = MergePodGroupConditions(merged, []scheduling.PodGroupCondition{resolved})
+	if len(merged) != 1 || merged[0].Reason != XPUTopologyResolvedReason || merged[0].Status != corev1.ConditionFalse {
+		t.Fatalf("xPU runtime blocker could not be resolved: %#v", merged)
+	}
+}
+
 func TestMergePodGroupStatusV1beta1PreservesOtherConditions(t *testing.T) {
 	current := schedulingv1beta1.PodGroupStatus{Conditions: []schedulingv1beta1.PodGroupCondition{
 		{Type: schedulingv1beta1.PodGroupScheduled, Status: corev1.ConditionTrue, Reason: "AlreadyScheduled"},
@@ -74,5 +102,23 @@ func TestMergePodGroupStatusV1beta1PreservesOtherConditions(t *testing.T) {
 	}
 	if merged.Conditions[0].Reason != "AlreadyScheduled" || merged.Conditions[1].Reason != XPUTopologyPolicyConflictReason {
 		t.Fatalf("status merge changed condition owners: %#v", merged.Conditions)
+	}
+}
+
+func TestMergePodGroupStatusV1beta1PreservesXPUTopologyRuntimeBlocker(t *testing.T) {
+	current := schedulingv1beta1.PodGroupStatus{Conditions: []schedulingv1beta1.PodGroupCondition{{
+		Type:   schedulingv1beta1.PodGroupUnschedulableType,
+		Status: corev1.ConditionTrue,
+		Reason: "XPUAssignmentNotEnforceable",
+	}}}
+	desired := schedulingv1beta1.PodGroupStatus{Conditions: []schedulingv1beta1.PodGroupCondition{{
+		Type:   schedulingv1beta1.PodGroupUnschedulableType,
+		Status: corev1.ConditionTrue,
+		Reason: "NotEnoughResources",
+	}}}
+
+	merged := MergePodGroupStatusV1beta1(current, desired)
+	if len(merged.Conditions) != 1 || merged.Conditions[0].Reason != "XPUAssignmentNotEnforceable" {
+		t.Fatalf("dynamic status overwrote xPU runtime blocker: %#v", merged.Conditions)
 	}
 }

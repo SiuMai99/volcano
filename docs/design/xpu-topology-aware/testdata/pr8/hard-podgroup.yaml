@@ -1,0 +1,16 @@
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: PodGroup
+metadata:
+  name: pr8-hard
+  namespace: default
+spec:
+  minMember: 1
+  queue: default
+  deviceTopology:
+    policies:
+    - resourceName: nvidia.com/gpu
+      applyTo: Pod
+      mode: hard
+      domain:
+        scope: Node
+        domainClass: local-scale-up
