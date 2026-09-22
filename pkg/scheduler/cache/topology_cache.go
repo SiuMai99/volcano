@@ -334,7 +334,13 @@ func (sc *SchedulerCache) refreshXPUTopologyAnnotation(refresh xpuTopologyAnnota
 	}
 	if err := sc.applyXPUTopologyUpdateLocked(update); err != nil {
 		klog.ErrorS(err, "Failed to publish xPU topology annotation observation", "node", refresh.node.Identity.Name, "nodeUID", refresh.node.Identity.UID)
+		return
 	}
+	klog.V(3).InfoS("Published xPU topology annotation observation",
+		"node", refresh.node.Identity.Name,
+		"operation", update.Operation,
+		"sourceGeneration", update.SourceGeneration,
+		"accepted", true)
 }
 
 // observeXPUTopologyNodeLocked records a fresh Node observation and publishes
