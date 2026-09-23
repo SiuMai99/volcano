@@ -15,27 +15,27 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"context"
 	"strings"
-)
 
-const AssignmentAnnotationKey = "volcano.sh/xpu-assignment"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"volcano.sh/volcano/pkg/scheduler/api"
+	assignmentprovider "volcano.sh/volcano/pkg/scheduler/topology/assignment"
+	"volcano.sh/volcano/pkg/scheduler/topology/provider"
+)
 
 // AssignmentRequest is the scheduler-to-provider handoff for the smallest
 // exact-ID bridge. The scheduler owns DeviceKeys; the provider receives them
 // as input and must not replace them with a different device.
 type AssignmentRequest struct {
-	NodeName string
-	NodeUID  string
-	Contract NVIDIAContract
-}
-
-// AssignmentProvider is the minimal provider contract exercised by XPU-01.
-// It intentionally contains no scheduling or device-selection method.
-type AssignmentProvider interface {
-	IdentityContract() NVIDIAContract
-	ValidateAssignment(req AssignmentRequest, keys []string) error
+	PodUID           string
+	Container        api.XPUContainerRef
+	NodeName         string
+	NodeUID          string
+	SourceGeneration uint64
+	Contract         NVIDIAContract
 }
 
 // BridgeError keeps provider/adapter failures structured so the harness can
@@ -53,73 +53,43 @@ func newBridgeError(reason, detail string) error {
 	return &BridgeError{Reason: reason, Detail: detail}
 }
 
-// MockNVIDIAProvider validates exact DeviceKeys against the inventory captured
-// from nvml-mock. It is a provider test double, not a replacement Device
-// Plugin, and it does not select a device on behalf of the scheduler.
-type MockNVIDIAProvider struct {
-	contract NVIDIAContract
-	devices  []MockDevice
-}
-
-func NewMockNVIDIAProvider(devices []MockDevice) *MockNVIDIAProvider {
-	return &MockNVIDIAProvider{
-		contract: expectedNVIDIAContract,
-		devices:  append([]MockDevice(nil), devices...),
+// NewMockNVIDIAProvider creates a validation-only L0 Provider over nvml-mock
+// inventory. Its capabilities intentionally do not satisfy ExactReady.
+func NewMockNVIDIAProvider(devices []MockDevice) assignmentprovider.Provider {
+	identity := provider.ProviderIdentityRef{
+		ProviderID: expectedNVIDIAContract.ProviderID,
+		Namespace:  expectedNVIDIAContract.Namespace,
 	}
-}
-
-func (p *MockNVIDIAProvider) IdentityContract() NVIDIAContract {
-	return p.contract
-}
-
-func (p *MockNVIDIAProvider) ValidateAssignment(req AssignmentRequest, keys []string) error {
-	if p == nil {
-		return newBridgeError(ReasonAssignmentNotEnforceable, "provider is nil")
-	}
-	if p.contract != req.Contract {
-		return newBridgeError(ReasonIdentityMismatch, "provider identity contract does not match request")
-	}
-	if len(keys) == 0 {
-		return newBridgeError(ReasonAssignmentInvalid, "provider received no selected DeviceKeys")
-	}
-
-	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		nodeUID, deviceID, err := splitCanonicalDeviceKey(key)
-		if err != nil {
-			return newBridgeError(ReasonAssignmentInvalid, err.Error())
+	inventory := make(map[api.DeviceKey]api.TopologyDevice, len(devices))
+	for _, device := range devices {
+		key := api.DeviceKey{
+			ResourceName: corev1.ResourceName(expectedNVIDIAContract.ResourceName),
+			OwnerNodeUID: types.UID(strings.TrimSpace(device.NodeUID)),
+			ID: api.DeviceID{
+				ProviderID: identity.ProviderID,
+				Namespace:  identity.Namespace,
+				Value:      api.SourceDeviceID(normalizeDeviceID(device.DeviceID)),
+			},
 		}
-		if nodeUID != strings.TrimSpace(req.NodeUID) {
-			return newBridgeError(ReasonIdentityMismatch,
-				fmt.Sprintf("selected DeviceKey belongs to NodeUID %q, request targets %q", nodeUID, req.NodeUID))
+		health := api.DeviceUnhealthy
+		if device.Healthy {
+			health = api.DeviceHealthy
 		}
-		if _, exists := seen[key]; exists {
-			return newBridgeError(ReasonAssignmentInvalid, fmt.Sprintf("duplicate selected DeviceKey %q", key))
-		}
-		seen[key] = struct{}{}
-
-		found := false
-		for _, device := range p.devices {
-			if strings.TrimSpace(device.NodeUID) != nodeUID || normalizeDeviceID(device.DeviceID) != deviceID {
-				continue
-			}
-			if strings.TrimSpace(device.NodeName) != strings.TrimSpace(req.NodeName) {
-				return newBridgeError(ReasonIdentityMismatch,
-					fmt.Sprintf("DeviceKey %q is not owned by requested NodeName %q", key, req.NodeName))
-			}
-			if !device.Healthy {
-				return newBridgeError(ReasonTopologyNotReady,
-					fmt.Sprintf("selected DeviceKey %q is not healthy", key))
-			}
-			found = true
-			break
-		}
-		if !found {
-			return newBridgeError(ReasonIdentityMismatch,
-				fmt.Sprintf("selected DeviceKey %q is absent from provider inventory", key))
+		inventory[key] = api.TopologyDevice{
+			Key:              key,
+			NodeName:         strings.TrimSpace(device.NodeName),
+			Health:           health,
+			SourceGeneration: 1,
 		}
 	}
-	return nil
+	return &assignmentprovider.StaticInventoryProvider{
+		ProviderIdentity: identity,
+		ProfileName:      "mock-nvidia-nvml-validation",
+		CapabilitySet: assignmentprovider.Capabilities{
+			ValidateSelectedDeviceKeys: true,
+		},
+		Devices: inventory,
+	}
 }
 
 // StockNVIDIAProvider models the current native Device Plugin path. It can
@@ -127,86 +97,117 @@ func (p *MockNVIDIAProvider) ValidateAssignment(req AssignmentRequest, keys []st
 // confirming a scheduler-selected UUID.
 type StockNVIDIAProvider struct{}
 
-func (StockNVIDIAProvider) IdentityContract() NVIDIAContract {
-	return expectedNVIDIAContract
+func (StockNVIDIAProvider) Identity() provider.ProviderIdentityRef {
+	return provider.ProviderIdentityRef{ProviderID: expectedNVIDIAContract.ProviderID, Namespace: expectedNVIDIAContract.Namespace}
 }
 
-func (StockNVIDIAProvider) ValidateAssignment(AssignmentRequest, []string) error {
-	return newBridgeError(ReasonAssignmentNotEnforceable,
-		"stock NVIDIA Device Plugin has no scheduler-selected UUID confirmation channel")
+func (StockNVIDIAProvider) Profile() string {
+	return "stock-nvidia"
+}
+
+func (StockNVIDIAProvider) Capabilities() assignmentprovider.Capabilities {
+	return assignmentprovider.Capabilities{}
+}
+
+func (StockNVIDIAProvider) ValidateSelected(context.Context, assignmentprovider.SelectedAssignment) (assignmentprovider.Confirmation, error) {
+	return assignmentprovider.Confirmation{}, &assignmentprovider.Error{
+		Reason: assignmentprovider.AssignmentNotEnforceable,
+		Detail: "stock NVIDIA Device Plugin has no scheduler-selected UUID confirmation channel",
+	}
 }
 
 // AssignmentAdapter is the smallest bridge: it validates the provider
 // identity, passes through scheduler-owned keys, and produces the minimum
 // assignment annotation value. It does not mutate a Pod or call kubelet.
 type AssignmentAdapter struct {
-	Provider AssignmentProvider
+	Provider assignmentprovider.Provider
 }
 
-func (a AssignmentAdapter) BuildAssignment(req AssignmentRequest, keys []string) (Assignment, string, error) {
+func (a AssignmentAdapter) BuildAssignment(req AssignmentRequest, keys []string) (api.XPUAssignment, string, error) {
 	if a.Provider == nil {
-		return Assignment{}, "", newBridgeError(ReasonAssignmentNotEnforceable, "assignment adapter has no provider")
+		return api.XPUAssignment{}, "", newBridgeError(ReasonAssignmentNotEnforceable, "assignment adapter has no provider")
 	}
 	if err := validateContract(req.Contract); err != nil {
-		return Assignment{}, "", newBridgeError(ReasonIdentityMismatch, err.Error())
+		return api.XPUAssignment{}, "", newBridgeError(ReasonIdentityMismatch, err.Error())
 	}
-	if a.Provider.IdentityContract() != req.Contract {
-		return Assignment{}, "", newBridgeError(ReasonIdentityMismatch,
+	identity := a.Provider.Identity()
+	if identity.ProviderID != req.Contract.ProviderID || identity.Namespace != req.Contract.Namespace {
+		return api.XPUAssignment{}, "", newBridgeError(ReasonIdentityMismatch,
 			"provider identity contract does not match scheduler request")
 	}
 
-	canonical, err := canonicalizeAssignment(Assignment{
-		Version:      1,
-		ResourceName: req.Contract.ResourceName,
-		Provider:     req.Contract.ProviderID,
-		DeviceKeys:   keys,
+	canonical, err := canonicalizeAssignment(api.XPUAssignment{
+		Version: api.XPUAssignmentVersion,
+		Assignments: []api.XPUAssignmentEntry{{
+			Container:    req.Container,
+			ResourceName: corev1.ResourceName(req.Contract.ResourceName),
+			Provider:     req.Contract.ProviderID,
+			DeviceKeys:   keys,
+		}},
 	})
 	if err != nil {
-		return Assignment{}, "", newBridgeError(ReasonAssignmentInvalid, err.Error())
+		return api.XPUAssignment{}, "", newBridgeError(ReasonAssignmentInvalid, err.Error())
 	}
-	if err := a.Provider.ValidateAssignment(req, canonical.DeviceKeys); err != nil {
-		return Assignment{}, "", err
+	entry := canonical.Assignments[0]
+	typedKeys := make([]api.DeviceKey, 0, len(entry.DeviceKeys))
+	for _, raw := range entry.DeviceKeys {
+		key, err := api.ParseXPUDeviceKey(entry.ResourceName, entry.Provider, req.Contract.Namespace, raw)
+		if err != nil {
+			return api.XPUAssignment{}, "", newBridgeError(ReasonAssignmentInvalid, err.Error())
+		}
+		typedKeys = append(typedKeys, key)
+	}
+	confirmation, err := a.Provider.ValidateSelected(context.Background(), assignmentprovider.SelectedAssignment{
+		PodUID:           types.UID(strings.TrimSpace(req.PodUID)),
+		Node:             api.NodeIdentity{Name: strings.TrimSpace(req.NodeName), UID: types.UID(strings.TrimSpace(req.NodeUID))},
+		Container:        req.Container,
+		ResourceName:     corev1.ResourceName(req.Contract.ResourceName),
+		DeviceKeys:       typedKeys,
+		SourceGeneration: req.SourceGeneration,
+	})
+	if err != nil {
+		return api.XPUAssignment{}, "", err
+	}
+	if !sameDeviceKeys(confirmation.AcceptedDeviceKeys, typedKeys) {
+		return api.XPUAssignment{}, "", newBridgeError(ReasonIdentityMismatch, "provider changed scheduler-selected DeviceKeys")
 	}
 
-	serialized, err := json.Marshal(canonical)
+	serialized, err := api.MarshalXPUAssignment(canonical)
 	if err != nil {
-		return Assignment{}, "", newBridgeError(ReasonAssignmentInvalid,
+		return api.XPUAssignment{}, "", newBridgeError(ReasonAssignmentInvalid,
 			"encode assignment: "+err.Error())
 	}
 	if _, err := ParseAssignment(serialized); err != nil {
-		return Assignment{}, "", newBridgeError(ReasonAssignmentInvalid,
+		return api.XPUAssignment{}, "", newBridgeError(ReasonAssignmentInvalid,
 			"serialized assignment did not round-trip: "+err.Error())
 	}
 	return canonical, string(serialized), nil
 }
 
-func splitCanonicalDeviceKey(key string) (string, string, error) {
-	key = strings.TrimSpace(key)
-	parts := strings.SplitN(key, "/", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid canonical DeviceKey %q", key)
+func sameDeviceKeys(left, right []api.DeviceKey) bool {
+	if len(left) != len(right) {
+		return false
 	}
-	canonical, err := CanonicalDeviceKey(parts[0], parts[1])
-	if err != nil {
-		return "", "", fmt.Errorf("invalid canonical DeviceKey %q: %w", key, err)
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
 	}
-	if canonical != key {
-		return "", "", fmt.Errorf("DeviceKey %q is not canonical; want %q", key, canonical)
-	}
-	return parts[0], normalizeDeviceID(parts[1]), nil
+	return true
 }
 
 type BridgeResult struct {
-	CaseID                    string      `json:"caseID"`
-	EvidenceLevel             string      `json:"evidenceLevel"`
-	Status                    string      `json:"status"`
-	Reason                    string      `json:"reason,omitempty"`
-	ProviderAdapter           string      `json:"providerAdapter,omitempty"`
-	SelectedDeviceKey         string      `json:"selectedDeviceKey,omitempty"`
-	AssignmentAnnotationKey   string      `json:"assignmentAnnotationKey,omitempty"`
-	AssignmentAnnotationValue string      `json:"assignmentAnnotationValue,omitempty"`
-	Assignment                *Assignment `json:"assignment,omitempty"`
-	Details                   []string    `json:"details,omitempty"`
+	CaseID                    string             `json:"caseID"`
+	EvidenceLevel             string             `json:"evidenceLevel"`
+	Status                    string             `json:"status"`
+	Reason                    string             `json:"reason,omitempty"`
+	Capabilities              CapabilityMatrix   `json:"capabilities"`
+	ProviderAdapter           string             `json:"providerAdapter,omitempty"`
+	SelectedDeviceKey         string             `json:"selectedDeviceKey,omitempty"`
+	AssignmentAnnotationKey   string             `json:"assignmentAnnotationKey,omitempty"`
+	AssignmentAnnotationValue string             `json:"assignmentAnnotationValue,omitempty"`
+	Assignment                *api.XPUAssignment `json:"assignment,omitempty"`
+	Details                   []string           `json:"details,omitempty"`
 }
 
 // RunBridge runs the positive feasibility path over the collected inventory.
@@ -222,10 +223,21 @@ func RunBridge(input ProbeInput) BridgeResult {
 	if level == "" {
 		level = "L0"
 	}
+	providerAdapter := NewMockNVIDIAProvider(input.Devices)
+	providerCapabilities := providerAdapter.Capabilities()
 	result := BridgeResult{
 		CaseID:          caseID,
 		EvidenceLevel:   level,
-		ProviderAdapter: "mock-nvidia-nvml-exact",
+		ProviderAdapter: "mock-nvidia-nvml-validation",
+		Capabilities: CapabilityMatrix{
+			EnumerateInventory:       true,
+			SchedulerSelectedInput:   true,
+			ValidateSelectedKey:      providerCapabilities.ValidateSelectedDeviceKeys,
+			ConsumeSelectedKey:       providerCapabilities.ConsumeSelectedDeviceKeys,
+			ConfirmKubeletDeviceID:   providerCapabilities.ConfirmKubeletDeviceIDs,
+			ReconcileRuntimeDeviceID: providerCapabilities.ReconcileRuntimeDeviceIDs,
+			ExactReady:               providerCapabilities.ExactReady(),
+		},
 	}
 
 	if err := validateContract(input.Contract); err != nil {
@@ -240,12 +252,15 @@ func RunBridge(input ProbeInput) BridgeResult {
 	}
 
 	request := AssignmentRequest{
-		NodeName: input.NodeName,
-		NodeUID:  input.NodeUID,
-		Contract: input.Contract,
+		PodUID:           input.PodUID,
+		Container:        input.Container,
+		NodeName:         input.NodeName,
+		NodeUID:          input.NodeUID,
+		SourceGeneration: input.SourceGeneration,
+		Contract:         input.Contract,
 	}
 	assignment, serialized, err := (AssignmentAdapter{
-		Provider: NewMockNVIDIAProvider(input.Devices),
+		Provider: providerAdapter,
 	}).BuildAssignment(request, []string{selectedKey})
 	if err != nil {
 		return failBridgeErrorResult(result, err)
@@ -253,13 +268,14 @@ func RunBridge(input ProbeInput) BridgeResult {
 
 	result.Status = StatusPass
 	result.SelectedDeviceKey = selectedKey
-	result.AssignmentAnnotationKey = AssignmentAnnotationKey
+	result.AssignmentAnnotationKey = api.XPUAssignmentAnnotationKey
 	result.AssignmentAnnotationValue = serialized
 	result.Assignment = &assignment
 	result.Details = []string{
 		"scheduler-selected DeviceKey was passed to the Provider without re-selection",
-		"mock NVIDIA Provider confirmed exact NodeUID and DeviceID membership and health",
-		"Adapter emitted the minimum volcano.sh/xpu-assignment value and verified round-trip parsing",
+		"mock NVIDIA Provider confirmed NodeUID and DeviceID membership and health",
+		"validation-only mock capabilities did not claim kubelet selected-ID enforcement",
+		"Adapter emitted the canonical assignments[] envelope and verified round-trip parsing",
 	}
 	return result
 }
@@ -274,6 +290,9 @@ func failBridgeResult(result BridgeResult, reason, detail string) BridgeResult {
 func failBridgeErrorResult(result BridgeResult, err error) BridgeResult {
 	if bridgeErr, ok := err.(*BridgeError); ok {
 		return failBridgeResult(result, bridgeErr.Reason, bridgeErr.Detail)
+	}
+	if providerErr, ok := err.(*assignmentprovider.Error); ok {
+		return failBridgeResult(result, string(providerErr.Reason), providerErr.Detail)
 	}
 	return failBridgeResult(result, ReasonAssignmentInvalid, err.Error())
 }

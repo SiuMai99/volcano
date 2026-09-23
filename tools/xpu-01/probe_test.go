@@ -15,8 +15,11 @@
 package main
 
 import (
-	"encoding/json"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"volcano.sh/volcano/pkg/scheduler/api"
 )
 
 func testInput() ProbeInput {
@@ -24,8 +27,14 @@ func testInput() ProbeInput {
 		CaseID:        "nvidia-nvml-mock-selected-uuid-idempotent",
 		EvidenceLevel: "L0",
 		Contract:      expectedNVIDIAContract,
-		NodeName:      "volcano-gpu-mvp-worker",
-		NodeUID:       "node-uid-a",
+		PodUID:        "pod-uid-a",
+		Container: api.XPUContainerRef{
+			Kind: api.XPUContainerRegular,
+			Name: "worker",
+		},
+		NodeName:         "volcano-gpu-mvp-worker",
+		NodeUID:          "node-uid-a",
+		SourceGeneration: 1,
 		Devices: []MockDevice{
 			{NodeName: "volcano-gpu-mvp-worker", NodeUID: "node-uid-a", DeviceID: "GPU-aaaaaaaa", Healthy: true},
 			{NodeName: "volcano-gpu-mvp-worker", NodeUID: "node-uid-a", DeviceID: "GPU-bbbbbbbb", Healthy: true},
@@ -41,17 +50,20 @@ func TestRunProbeSelectedUUID(t *testing.T) {
 	if result.Status != StatusPass {
 		t.Fatalf("expected pass, got %#v", result)
 	}
+	if result.Capabilities.ExactReady || !result.Capabilities.ValidateSelectedKey {
+		t.Fatalf("unexpected L0 capability matrix: %#v", result.Capabilities)
+	}
 	if result.SelectedDeviceKey != "node-uid-a/GPU-BBBBBBBB" {
 		t.Fatalf("unexpected selected key %q", result.SelectedDeviceKey)
 	}
-	if result.Assignment == nil || len(result.Assignment.DeviceKeys) != 1 {
+	if result.Assignment == nil || len(result.Assignment.Assignments) != 1 || len(result.Assignment.Assignments[0].DeviceKeys) != 1 {
 		t.Fatalf("expected one assignment key, got %#v", result.Assignment)
 	}
 	parsed, err := ParseAssignment([]byte(result.SerializedAssignment))
 	if err != nil {
 		t.Fatalf("parse serialized assignment: %v", err)
 	}
-	if got := parsed.DeviceKeys[0]; got != result.SelectedDeviceKey {
+	if got := parsed.Assignments[0].DeviceKeys[0]; got != result.SelectedDeviceKey {
 		t.Fatalf("round-trip key=%q, want %q", got, result.SelectedDeviceKey)
 	}
 }
@@ -83,6 +95,28 @@ func TestRunProbeRejectsUnhealthySelectedDevice(t *testing.T) {
 	}
 }
 
+func TestRunProbeRejectsIncompleteAssignmentIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*ProbeInput)
+		wantReason string
+	}{
+		{name: "missing PodUID", mutate: func(input *ProbeInput) { input.PodUID = "" }, wantReason: ReasonAssignmentInvalid},
+		{name: "missing ContainerRef", mutate: func(input *ProbeInput) { input.Container = api.XPUContainerRef{} }, wantReason: ReasonAssignmentInvalid},
+		{name: "missing generation", mutate: func(input *ProbeInput) { input.SourceGeneration = 0 }, wantReason: ReasonTopologyNotReady},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := testInput()
+			tt.mutate(&input)
+			result := RunProbe(input)
+			if result.Status != StatusFail || result.Reason != tt.wantReason {
+				t.Fatalf("RunProbe() = %#v, want reason %s", result, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestInventoryAllowsCrossNodeSameDeviceIDButRejectsSameNodeCollision(t *testing.T) {
 	input := testInput()
 	if err := validateInventory(input.Devices); err != nil {
@@ -95,20 +129,23 @@ func TestInventoryAllowsCrossNodeSameDeviceIDButRejectsSameNodeCollision(t *test
 }
 
 func TestAssignmentCanonicalizationIsSortedAndIdempotent(t *testing.T) {
-	assignment := Assignment{
-		Version:      1,
-		ResourceName: expectedNVIDIAContract.ResourceName,
-		Provider:     expectedNVIDIAContract.ProviderID,
-		DeviceKeys:   []string{"node-b/gpu-b", "node-a/GPU-A"},
+	assignment := api.XPUAssignment{
+		Version: api.XPUAssignmentVersion,
+		Assignments: []api.XPUAssignmentEntry{{
+			Container:    api.XPUContainerRef{Kind: api.XPUContainerRegular, Name: "worker"},
+			ResourceName: corev1.ResourceName(expectedNVIDIAContract.ResourceName),
+			Provider:     expectedNVIDIAContract.ProviderID,
+			DeviceKeys:   []string{"node-b/GPU-B", "node-a/GPU-A"},
+		}},
 	}
 	canonical, err := canonicalizeAssignment(assignment)
 	if err != nil {
 		t.Fatalf("canonicalize assignment: %v", err)
 	}
-	if got, want := canonical.DeviceKeys[0], "node-a/GPU-A"; got != want {
+	if got, want := canonical.Assignments[0].DeviceKeys[0], "node-a/GPU-A"; got != want {
 		t.Fatalf("first key=%q, want %q", got, want)
 	}
-	data, err := json.Marshal(canonical)
+	data, err := api.MarshalXPUAssignment(canonical)
 	if err != nil {
 		t.Fatalf("marshal assignment: %v", err)
 	}
@@ -116,17 +153,17 @@ func TestAssignmentCanonicalizationIsSortedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse assignment: %v", err)
 	}
-	if got, want := parsed.DeviceKeys[1], "node-b/GPU-B"; got != want {
+	if got, want := parsed.Assignments[0].DeviceKeys[1], "node-b/GPU-B"; got != want {
 		t.Fatalf("second key=%q, want %q", got, want)
 	}
 }
 
 func TestParseAssignmentRejectsUnknownFieldsAndDuplicateKeys(t *testing.T) {
-	unknownField := []byte(`{"version":1,"resourceName":"nvidia.com/gpu","provider":"nvidia-nvml-v1","deviceKeys":["node/GPU-A"],"planDigest":"not-contract"}`)
+	unknownField := []byte(`{"version":1,"assignments":[{"container":{"kind":"regular","name":"worker"},"resourceName":"nvidia.com/gpu","provider":"nvidia-nvml-v1","deviceKeys":["node/GPU-A"],"planDigest":"not-contract"}]}`)
 	if _, err := ParseAssignment(unknownField); err == nil {
 		t.Fatal("unknown assignment fields should be rejected")
 	}
-	duplicateKeys := []byte(`{"version":1,"resourceName":"nvidia.com/gpu","provider":"nvidia-nvml-v1","deviceKeys":["node/GPU-A","node/gpu-a"]}`)
+	duplicateKeys := []byte(`{"version":1,"assignments":[{"container":{"kind":"regular","name":"worker"},"resourceName":"nvidia.com/gpu","provider":"nvidia-nvml-v1","deviceKeys":["node/GPU-A","node/GPU-A"]}]}`)
 	if _, err := ParseAssignment(duplicateKeys); err == nil {
 		t.Fatal("duplicate canonical assignment keys should be rejected")
 	}

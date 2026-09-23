@@ -337,7 +337,7 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 		name           string
 		containers     []corev1.Container
 		initContainers []corev1.Container
-		want           int64
+		want           api.XPUResourceRequest
 	}{
 		{
 			name: "multiple regular containers with one device consumer",
@@ -347,7 +347,11 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 				}},
 				{Name: "sidecar"},
 			},
-			want: 2,
+			want: api.XPUResourceRequest{
+				Container:    api.XPUContainerRef{Kind: api.XPUContainerRegular, Name: "worker"},
+				ResourceName: compilerTestResource,
+				Count:        2,
+			},
 		},
 		{
 			name:       "ordinary init container with device limit",
@@ -355,7 +359,11 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 			initContainers: []corev1.Container{{Name: "prepare", Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{compilerTestResource: quantity},
 			}}},
-			want: 2,
+			want: api.XPUResourceRequest{
+				Container:    api.XPUContainerRef{Kind: api.XPUContainerInit, Name: "prepare"},
+				ResourceName: compilerTestResource,
+				Count:        2,
+			},
 		},
 		{
 			name:       "restartable init container with device limit",
@@ -363,7 +371,11 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 			initContainers: []corev1.Container{{Name: "sidecar-init", RestartPolicy: &restartPolicy, Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{compilerTestResource: quantity},
 			}}},
-			want: 2,
+			want: api.XPUResourceRequest{
+				Container:    api.XPUContainerRef{Kind: api.XPUContainerRestartableInit, Name: "sidecar-init"},
+				ResourceName: compilerTestResource,
+				Count:        2,
+			},
 		},
 		{
 			name: "request and limit are both accepted when equal",
@@ -371,7 +383,11 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 				Requests: corev1.ResourceList{compilerTestResource: quantity},
 				Limits:   corev1.ResourceList{compilerTestResource: quantity},
 			}}},
-			want: 2,
+			want: api.XPUResourceRequest{
+				Container:    api.XPUContainerRef{Kind: api.XPUContainerRegular, Name: "worker"},
+				ResourceName: compilerTestResource,
+				Count:        2,
+			},
 		},
 	}
 
@@ -386,7 +402,7 @@ func TestTaskResourceRequestSupportsMultipleContainersAndInitContainers(t *testi
 				t.Fatalf("taskResourceRequest() error = %v", err)
 			}
 			if got != tt.want {
-				t.Fatalf("taskResourceRequest() = %d, want %d", got, tt.want)
+				t.Fatalf("taskResourceRequest() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

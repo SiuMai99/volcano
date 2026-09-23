@@ -16,6 +16,9 @@ package main
 
 import (
 	"testing"
+
+	"volcano.sh/volcano/pkg/scheduler/api"
+	assignmentprovider "volcano.sh/volcano/pkg/scheduler/topology/assignment"
 )
 
 func TestRunBridgeConfirmsAndPassesThroughSchedulerSelectedKey(t *testing.T) {
@@ -23,17 +26,20 @@ func TestRunBridgeConfirmsAndPassesThroughSchedulerSelectedKey(t *testing.T) {
 	if result.Status != StatusPass {
 		t.Fatalf("expected bridge pass, got %#v", result)
 	}
+	if result.Capabilities.ExactReady || result.Capabilities.ConsumeSelectedKey || result.Capabilities.ConfirmKubeletDeviceID {
+		t.Fatalf("mock validation bridge overstated exact capabilities: %#v", result.Capabilities)
+	}
 	if result.SelectedDeviceKey != "node-uid-a/GPU-BBBBBBBB" {
 		t.Fatalf("unexpected selected key %q", result.SelectedDeviceKey)
 	}
-	if result.AssignmentAnnotationKey != AssignmentAnnotationKey {
+	if result.AssignmentAnnotationKey != api.XPUAssignmentAnnotationKey {
 		t.Fatalf("unexpected annotation key %q", result.AssignmentAnnotationKey)
 	}
 	assignment, err := ParseAssignment([]byte(result.AssignmentAnnotationValue))
 	if err != nil {
 		t.Fatalf("parse annotation value: %v", err)
 	}
-	if len(assignment.DeviceKeys) != 1 || assignment.DeviceKeys[0] != result.SelectedDeviceKey {
+	if len(assignment.Assignments) != 1 || len(assignment.Assignments[0].DeviceKeys) != 1 || assignment.Assignments[0].DeviceKeys[0] != result.SelectedDeviceKey {
 		t.Fatalf("bridge changed selected key: assignment=%#v result=%q", assignment, result.SelectedDeviceKey)
 	}
 }
@@ -45,11 +51,11 @@ func TestAssignmentAdapterRejectsStockProvider(t *testing.T) {
 		t.Fatalf("canonical selected key: %v", err)
 	}
 	_, _, err = (AssignmentAdapter{Provider: StockNVIDIAProvider{}}).BuildAssignment(
-		AssignmentRequest{NodeName: input.NodeName, NodeUID: input.NodeUID, Contract: input.Contract},
+		assignmentRequestForInput(input),
 		[]string{key},
 	)
-	bridgeErr, ok := err.(*BridgeError)
-	if !ok || bridgeErr.Reason != ReasonAssignmentNotEnforceable {
+	bridgeErr, ok := err.(*assignmentprovider.Error)
+	if !ok || bridgeErr.Reason != assignmentprovider.AssignmentNotEnforceable {
 		t.Fatalf("expected stock-provider gap, got %T %v", err, err)
 	}
 }
@@ -61,12 +67,23 @@ func TestMockProviderRejectsSelectedKeyFromAnotherNode(t *testing.T) {
 		t.Fatalf("canonical selected key: %v", err)
 	}
 	_, _, err = (AssignmentAdapter{Provider: NewMockNVIDIAProvider(input.Devices)}).BuildAssignment(
-		AssignmentRequest{NodeName: input.NodeName, NodeUID: input.NodeUID, Contract: input.Contract},
+		assignmentRequestForInput(input),
 		[]string{key},
 	)
-	bridgeErr, ok := err.(*BridgeError)
-	if !ok || bridgeErr.Reason != ReasonIdentityMismatch {
+	bridgeErr, ok := err.(*assignmentprovider.Error)
+	if !ok || bridgeErr.Reason != assignmentprovider.IdentityMismatch {
 		t.Fatalf("expected NodeUID mismatch, got %T %v", err, err)
+	}
+}
+
+func assignmentRequestForInput(input ProbeInput) AssignmentRequest {
+	return AssignmentRequest{
+		PodUID:           input.PodUID,
+		Container:        input.Container,
+		NodeName:         input.NodeName,
+		NodeUID:          input.NodeUID,
+		SourceGeneration: input.SourceGeneration,
+		Contract:         input.Contract,
 	}
 }
 

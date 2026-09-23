@@ -120,8 +120,14 @@ jq -n \
       resourceName: "nvidia.com/gpu",
       discoveryAPI: "NVML"
     },
+    podUID: "xpu01-probe-pod",
+    container: {
+      kind: "regular",
+      name: "worker"
+    },
     nodeName: $node_name,
     nodeUID: $node_uid,
+    sourceGeneration: 1,
     devices: $devices,
     selectedDeviceID: $selected_device_id,
     providerCanConfirmSelected: false
@@ -142,6 +148,7 @@ set -e
 [[ "${probe_exit}" -eq 1 ]] || die "expected stock Device Plugin compatibility probe to fail closed, exit=${probe_exit}; inspect ${OUTPUT_DIR}"
 [[ "$(jq -r '.status' "${result_path}")" == "Fail" ]] || die "probe result is not Fail"
 [[ "$(jq -r '.reason' "${result_path}")" == "XPUAssignmentNotEnforceable" ]] || die "unexpected probe reason in ${result_path}"
+[[ "$(jq -r '.capabilities.exactReady' "${result_path}")" == "false" ]] || die "stock profile must not report exactReady"
 
 bridge_result_path="${OUTPUT_DIR}/bridge-result.json"
 set +e
@@ -154,6 +161,8 @@ set -e
 [[ "$(jq -r '.status' "${bridge_result_path}")" == "Pass" ]] || die "bridge result is not Pass"
 [[ "$(jq -r '.assignmentAnnotationKey' "${bridge_result_path}")" == "volcano.sh/xpu-assignment" ]] || \
   die "bridge did not emit the expected assignment annotation key"
+[[ "$(jq -r '.capabilities.exactReady' "${bridge_result_path}")" == "false" ]] || \
+  die "validation-only mock bridge must not report exactReady"
 
 printf 'L1 inventory collected; stock Device Plugin gap recorded as XPUAssignmentNotEnforceable.\n'
 printf 'Manifest: %s\nStock result: %s\nBridge result: %s\n' \

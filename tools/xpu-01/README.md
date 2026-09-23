@@ -1,8 +1,9 @@
-# XPU-01 L0 Provider identity probe
+# XPU-01B assignment contract and bridge probe
 
-This directory contains a small, standard-library-only contract harness for
-XPU-01. It is deliberately a test harness, not a production scheduler plugin
-or NVIDIA Device Plugin implementation.
+This directory contains the replayable contract harness for XPU-01B/PR9. It
+reuses the production assignment codec from `pkg/scheduler/api`; it remains a
+test harness, not a production scheduler plugin or NVIDIA Device Plugin
+implementation.
 
 It verifies the fixed XPU-00 D4 identity contract:
 
@@ -14,10 +15,10 @@ DiscoveryAPI=NVML
 ```
 
 The harness selects a non-default mock `DeviceID`, binds it to the requested
-NodeUID, emits the minimum `version/resourceName/provider/deviceKeys`
-assignment, parses it strictly, and checks that it round-trips canonically.
-It fails closed when the provider cannot confirm the selected ID, the ID is
-not on the requested NodeUID, or the device is unhealthy.
+NodeUID and ContainerRef, emits the Pod-level `version/assignments[]`
+assignment envelope, parses it strictly, and checks that it round-trips
+canonically. It fails closed when the provider cannot validate the selected
+ID, the ID is not on the requested NodeUID, or the device is unhealthy.
 
 ## Run the L0 probe
 
@@ -28,8 +29,10 @@ go test ./tools/xpu-01
 go run ./tools/xpu-01 -input ./tools/xpu-01/testdata/mock-selected-uuid.json
 ```
 
-The command prints a structured JSON result. A non-`Pass` result exits with a
-non-zero status. The `L0` result proves only the contract harness behavior; it
+The command prints a structured JSON result, including independent capability
+bits for validation, consumption, API Pod persistence, kubelet confirmation
+and runtime reconciliation. A non-`Pass` result exits with a non-zero status.
+The `L0` result proves only contract validation; `exactReady` remains false and
 does not prove that the NVIDIA Device Plugin or kubelet consumed the selected
 UUID.
 
@@ -61,14 +64,31 @@ go run ./tools/xpu-01 \
 ```
 
 It passes scheduler-owned `NodeUID/DeviceKey` values unchanged to a mock
-NVIDIA Provider, confirms exact inventory membership and health, and emits the
-minimum `volcano.sh/xpu-assignment` JSON value. It does not mutate a Pod, call
-kubelet, or prove that the stock Device Plugin will enforce the selected UUID.
+NVIDIA Provider, validates exact inventory membership and health, and emits
+the canonical `volcano.sh/xpu-assignment` envelope. The mock profile is named
+`mock-nvidia-nvml-validation` and deliberately reports `exactReady=false`. It
+does not mutate a Pod, call kubelet, or prove that the stock Device Plugin will
+enforce the selected UUID.
 The same manifest should still return
 `XPUAssignmentNotEnforceable` in the default `stock-probe` mode.
 
 Real NVIDIA runtime verification is a separate L2 gate and cannot be replaced
 by this harness or by `nvml-mock` output.
+
+## API Pod writer PoC
+
+PR9 also provides a narrow, conflict-aware API Pod writer in
+`pkg/scheduler/cache/xpu_assignment_writer.go`. Its focused tests prove
+canonical annotation persistence, UID/resourceVersion preconditions,
+idempotence and preservation of unrelated annotations:
+
+```bash
+go test ./pkg/scheduler/cache -run TestAPIPodXPUAssignmentWriter
+```
+
+The writer is not connected to `Session.dispatch`, `Statement.Commit` or
+`AddBindTask` in PR9. Production final-path integration and Pod-derived anchor
+recovery belong to later M3 PRs; hard topology therefore remains no-Bind.
 
 ## Collect L1 evidence from the kind MVP
 

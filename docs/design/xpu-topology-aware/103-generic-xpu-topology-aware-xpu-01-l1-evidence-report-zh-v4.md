@@ -3,6 +3,7 @@
 > M3 对齐说明（2026-09-22）：本报告保存的单 assignment payload 是 XPU-01 探针历史证据，不是 M3 production serialization。
 > M3 使用包含 ContainerRef 的 Pod 级 `assignments[]` canonical envelope，且必须另行证明 API Pod 持久化、selected DeviceKey 与 kubelet
 > DeviceID 对账；见 [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
+> 2026-09-23 的 PR9 代码已迁移当前 harness，但没有重写本报告引用的 2026-09-17 原始证据；历史结果继续按原格式解释。
 
 > 关联合同：[XPU-00 合同冻结记录](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
 >

@@ -8,8 +8,14 @@
     "resourceName": "nvidia.com/gpu",
     "discoveryAPI": "NVML"
   },
+  "podUID": "pod-uid-a",
+  "container": {
+    "kind": "regular",
+    "name": "worker"
+  },
   "nodeName": "volcano-gpu-mvp-worker",
   "nodeUID": "node-uid-a",
+  "sourceGeneration": 1,
   "devices": [
     {
       "nodeName": "volcano-gpu-mvp-worker",

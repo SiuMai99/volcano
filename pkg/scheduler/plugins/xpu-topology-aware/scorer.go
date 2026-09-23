@@ -156,7 +156,7 @@ func (s *sessionScorer) score(task *api.TaskInfo, nodes []*api.NodeInfo, job *ap
 				candidates = append(candidates, scoredPlacement{nodeName: node.Name, placement: candidate})
 			}
 		}
-		sortScoredPlacements(candidates, policy.request, preferred)
+		sortScoredPlacements(candidates, policy.request.Count, preferred)
 		for index, candidate := range candidates {
 			// Candidates receive a deterministic, bounded descending preference.
 			// Non-candidates remain absent (and therefore score zero), never
@@ -208,7 +208,7 @@ func (c *compiler) bestPlacementForNode(policy compiledPolicy, nodeName string) 
 				continue
 			}
 			capacity := c.healthyDevices(domain.EffectiveDeviceKeys)
-			if capacity < policy.request {
+			if capacity < policy.request.Count {
 				continue
 			}
 			candidates = append(candidates, placement{
@@ -227,7 +227,7 @@ func (c *compiler) bestPlacementForNode(policy compiledPolicy, nodeName string) 
 				continue
 			}
 			capacity := c.fabricHealthyDevicesForNode(fabric, nodeName, state.Identity.UID)
-			if capacity < policy.request {
+			if capacity < policy.request.Count {
 				continue
 			}
 			candidates = append(candidates, placement{
@@ -242,7 +242,7 @@ func (c *compiler) bestPlacementForNode(policy compiledPolicy, nodeName string) 
 	if len(candidates) == 0 {
 		return placement{}, false
 	}
-	sort.Slice(candidates, func(i, j int) bool { return compactLess(candidates[i], candidates[j], policy.request, nil) })
+	sort.Slice(candidates, func(i, j int) bool { return compactLess(candidates[i], candidates[j], policy.request.Count, nil) })
 	return candidates[0], true
 }
 

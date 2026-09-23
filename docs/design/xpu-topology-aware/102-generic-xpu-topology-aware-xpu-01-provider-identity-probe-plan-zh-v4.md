@@ -7,13 +7,15 @@
 > 状态：**实施计划，尚未表示 XPU-01 已完成**。
 > 本文只规划探针、证据和能力差距输出，不新增 scheduler plugin、CRD、跨系统 allocation owner 或多 Pod 事务层。
 > 原始计划基线：2026-09-17；当时仓库尚无 V4 Provider、topology manager 或 `xpu-assignment` Go 实现。
-> 当前仓库已有 M1/M2 Provider 与 topology manager，但仍无 production `xpu-assignment` writer；以本文后述 M3 对齐说明为准。
+> 当前仓库已有 M1/M2 Provider 与 topology manager。PR9 已开始实现 production assignment codec 和独立 API Pod writer PoC，
+> 但 writer 尚未接入 final Bind path，也没有 exact-ready Provider profile；hard 仍保持 no-Bind。
 >
 > 范围修订（2026-09-20）：保留 stock NVIDIA Device Plugin 的兼容性负例，同时增加现有 Volcano vGPU/HAMi Adapter 的独立 L1 验证轨道。vGPU 轨道使用 `deviceSplitCount=1` 的单槽位实验配置，不改变 XPU-00 对 Alpha 不支持 GPU 虚拟化请求的原始边界。
 >
-> M3 对齐说明（2026-09-22）：本文的单 assignment 顶层 JSON 是 XPU-01 探针历史格式。M3 对多
-> regular/init/restartable-init container 与多目标 resource 使用 Pod 级 `assignments[]` canonical envelope；迁移要求和放行门见
-> [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。本文历史证据不因此升级为 production assignment contract。
+> M3 对齐说明（2026-09-23）：`tools/xpu-01` 已迁移到 Pod 级 `assignments[]` canonical envelope，并直接复用
+> `pkg/scheduler/api/device_topology_assignment.go`；2026-09-17 保存的历史证据仍是旧单 assignment 格式，不能因此升级为
+> production persistence 或 exact-ID 证据。放行门见
+> [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
 
 ## 1. 目标与完成边界
 
@@ -86,26 +88,35 @@ XPU-01 使用以下两个执行 profile。它们共享 NVIDIA UUID/NodeUID ident
 
 ### 2.2 最小 assignment payload
 
-探针使用 XPU-00 冻结的最小字段，不增加未被消费者使用的 Domain、Fabric、Group 或 plan digest 字段：
+PR9 探针与 production codec 使用包含 ContainerRef 的 Pod 级 envelope，不增加未被消费者使用的 Domain、Fabric、Group 或 plan digest 字段：
 
 ```json
 {
   "version": 1,
-  "resourceName": "nvidia.com/gpu",
-  "provider": "nvidia-nvml-v1",
-  "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+  "assignments": [
+    {
+      "container": {"kind": "regular", "name": "worker"},
+      "resourceName": "nvidia.com/gpu",
+      "provider": "nvidia-nvml-v1",
+      "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
+    }
+  ]
 }
 ```
 
 合同要求：
 
-- `version`、`resourceName`、`provider`、`deviceKeys` 必须存在且类型正确；
+- `version`、`assignments[]`、`container`、`resourceName`、`provider`、`deviceKeys` 必须存在且类型正确；
+- `container.kind` 只接受 `regular/init/restartable-init`，每条 resource 必须对应 Pod 中唯一真实消费者；
+- 同一 `resourceName` 恰有一个 entry，DeviceKey 数量等于该消费者的正整数 limit；
 - `deviceKeys` 必须 canonical、稳定、可校验，并包含 NodeUID-safe identity；
 - 同一 Pod 的 assignment 重读和重新序列化不应改变语义或产生不同的 canonical key；
 - Provider 只能校验或消费 scheduler-selected DeviceKeys，不能在 callback 中重新选卡或替换 plan；
 - assignment annotation 在成功 Bind 后必须仍可从 Pod 读取；
 - vGPU 私有的 `volcano.sh/vgpu-use-gpuuuid`、`volcano.sh/vgpu-ids-new` 和 `volcano.sh/devices-to-allocate` 可以作为 Adapter 证据保存，但不能替代 generic `volcano.sh/xpu-assignment`；
 - Provider 无法消费或确认 selected DeviceKey 时，hard 路径的结论必须是 `XPUAssignmentNotEnforceable`，不能静默改为 soft。
+- harness capability matrix 必须分别报告 validate、consume、persist、kubelet confirm 和 runtime reconcile；L0 validation Pass 时
+  `exactReady` 仍必须为 `false`。
 
 ### 2.3 证据等级
 

@@ -9,7 +9,9 @@
 > M1/M2 基线：[M1/M2 Advisory MVP 开发计划](./104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md)与
 > [M2 安装及运行证据](./105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md)。
 >
-> 状态：**待实施计划**。源码复核日期：2026-09-22；本地实现基线：`5cd3f7b7e`。
+> 状态：**实施中，PR9 assignment contract/exact bridge probe 已启动**。计划源码复核日期：2026-09-22；PR9 开发起点：`7bc3a0e4f`。
+> 当前已开始 production assignment codec、ContainerRef request、Provider capability/Fake、probe 迁移和 API Pod writer PoC；
+> 尚无 exact-ready L1 profile，hard no-Bind 不变。
 > 本文描述 M3 的开发边界和验收门槛，不表示 hard topology、scheduler-selected DeviceKey、Pod assignment、Pod-derived anchor 或
 > runtime UUID 已经实现。M1/M2 的 hard no-Bind guard 在 M3 全部放行条件满足前必须继续生效。
 

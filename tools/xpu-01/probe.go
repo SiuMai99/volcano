@@ -15,12 +15,13 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"sort"
 	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"volcano.sh/volcano/pkg/scheduler/api"
 )
 
 const (
@@ -65,121 +66,67 @@ type MockDevice struct {
 // immutable manifest. ProviderCanConfirmSelected models the capability under
 // test; it is not an implementation of the NVIDIA Device Plugin protocol.
 type ProbeInput struct {
-	CaseID                     string         `json:"caseID"`
-	EvidenceLevel              string         `json:"evidenceLevel"`
-	Contract                   NVIDIAContract `json:"contract"`
-	NodeName                   string         `json:"nodeName"`
-	NodeUID                    string         `json:"nodeUID"`
-	Devices                    []MockDevice   `json:"devices"`
-	SelectedDeviceID           string         `json:"selectedDeviceID"`
-	ProviderCanConfirmSelected bool           `json:"providerCanConfirmSelected"`
+	CaseID                     string              `json:"caseID"`
+	EvidenceLevel              string              `json:"evidenceLevel"`
+	Contract                   NVIDIAContract      `json:"contract"`
+	PodUID                     string              `json:"podUID"`
+	Container                  api.XPUContainerRef `json:"container"`
+	NodeName                   string              `json:"nodeName"`
+	NodeUID                    string              `json:"nodeUID"`
+	SourceGeneration           uint64              `json:"sourceGeneration"`
+	Devices                    []MockDevice        `json:"devices"`
+	SelectedDeviceID           string              `json:"selectedDeviceID"`
+	ProviderCanConfirmSelected bool                `json:"providerCanConfirmSelected"`
 }
 
-// Assignment is the minimum scheduler-owned assignment payload defined by
-// XPU-00. Keep this type small: Domain/Fabric/Group fields are derived facts,
-// not part of the Alpha assignment contract.
-type Assignment struct {
-	Version      int      `json:"version"`
-	ResourceName string   `json:"resourceName"`
-	Provider     string   `json:"provider"`
-	DeviceKeys   []string `json:"deviceKeys"`
+// CapabilityMatrix keeps each exact-assignment claim independent. A profile
+// is not exact-ready merely because inventory enumeration or validation works.
+type CapabilityMatrix struct {
+	EnumerateInventory       bool `json:"enumerateInventory"`
+	SchedulerSelectedInput   bool `json:"schedulerSelectedInput"`
+	ValidateSelectedKey      bool `json:"validateSelectedKey"`
+	ConsumeSelectedKey       bool `json:"consumeSelectedKey"`
+	PersistAPIPodAssignment  bool `json:"persistAPIPodAssignment"`
+	ConfirmKubeletDeviceID   bool `json:"confirmKubeletDeviceID"`
+	ReconcileRuntimeDeviceID bool `json:"reconcileRuntimeDeviceID"`
+	ExactReady               bool `json:"exactReady"`
 }
 
 // ProbeResult is the structured result written by the CLI and consumed by the
 // evidence report. A failed result is still useful evidence when its reason is
 // explicit and its inputs are preserved.
 type ProbeResult struct {
-	CaseID               string      `json:"caseID"`
-	EvidenceLevel        string      `json:"evidenceLevel"`
-	Status               string      `json:"status"`
-	Reason               string      `json:"reason,omitempty"`
-	SelectedDeviceKey    string      `json:"selectedDeviceKey,omitempty"`
-	Assignment           *Assignment `json:"assignment,omitempty"`
-	SerializedAssignment string      `json:"serializedAssignment,omitempty"`
-	Details              []string    `json:"details,omitempty"`
+	CaseID               string             `json:"caseID"`
+	EvidenceLevel        string             `json:"evidenceLevel"`
+	Status               string             `json:"status"`
+	Reason               string             `json:"reason,omitempty"`
+	Capabilities         CapabilityMatrix   `json:"capabilities"`
+	SelectedDeviceKey    string             `json:"selectedDeviceKey,omitempty"`
+	Assignment           *api.XPUAssignment `json:"assignment,omitempty"`
+	SerializedAssignment string             `json:"serializedAssignment,omitempty"`
+	Details              []string           `json:"details,omitempty"`
 }
 
 // CanonicalDeviceKey binds a provider DeviceID to the NodeUID that owns it.
 // Device IDs are normalized case-insensitively because NVIDIA UUID spelling is
 // not a safe cross-component identity boundary by itself.
 func CanonicalDeviceKey(nodeUID, deviceID string) (string, error) {
-	nodeUID = strings.TrimSpace(nodeUID)
-	deviceID = normalizeDeviceID(deviceID)
-	if nodeUID == "" {
-		return "", fmt.Errorf("node UID is empty")
-	}
-	if deviceID == "" {
-		return "", fmt.Errorf("device ID is empty")
-	}
-	if strings.ContainsAny(nodeUID, "/\n\r") {
-		return "", fmt.Errorf("node UID contains a key separator")
-	}
-	if strings.ContainsAny(deviceID, "/\n\r") {
-		return "", fmt.Errorf("device ID contains a key separator")
-	}
-	return nodeUID + "/" + deviceID, nil
+	return api.CanonicalXPUDeviceKey(types.UID(strings.TrimSpace(nodeUID)), api.SourceDeviceID(normalizeDeviceID(deviceID)))
 }
 
 func normalizeDeviceID(deviceID string) string {
 	return strings.ToUpper(strings.TrimSpace(deviceID))
 }
 
-func canonicalizeAssignment(assignment Assignment) (Assignment, error) {
-	if assignment.Version != 1 {
-		return Assignment{}, fmt.Errorf("unsupported assignment version %d", assignment.Version)
-	}
-	if assignment.ResourceName != expectedNVIDIAContract.ResourceName {
-		return Assignment{}, fmt.Errorf("unexpected resourceName %q", assignment.ResourceName)
-	}
-	if assignment.Provider != expectedNVIDIAContract.ProviderID {
-		return Assignment{}, fmt.Errorf("unexpected provider %q", assignment.Provider)
-	}
-	if len(assignment.DeviceKeys) == 0 {
-		return Assignment{}, fmt.Errorf("deviceKeys is empty")
-	}
-
-	keys := make([]string, 0, len(assignment.DeviceKeys))
-	seen := make(map[string]struct{}, len(assignment.DeviceKeys))
-	for _, key := range assignment.DeviceKeys {
-		key = strings.TrimSpace(key)
-		parts := strings.SplitN(key, "/", 2)
-		if len(parts) != 2 {
-			return Assignment{}, fmt.Errorf("invalid device key %q", key)
-		}
-		canonicalKey, err := CanonicalDeviceKey(parts[0], parts[1])
-		if err != nil {
-			return Assignment{}, fmt.Errorf("invalid device key %q: %w", key, err)
-		}
-		if _, exists := seen[canonicalKey]; exists {
-			return Assignment{}, fmt.Errorf("duplicate device key %q", canonicalKey)
-		}
-		seen[canonicalKey] = struct{}{}
-		keys = append(keys, canonicalKey)
-	}
-	sort.Strings(keys)
-	assignment.DeviceKeys = keys
-	return assignment, nil
+func canonicalizeAssignment(assignment api.XPUAssignment) (api.XPUAssignment, error) {
+	return api.CanonicalizeXPUAssignment(assignment)
 }
 
 // ParseAssignment strictly parses and canonicalizes the minimum assignment
 // payload. Unknown fields are rejected so a later producer cannot silently
 // create an unreviewed contract extension.
-func ParseAssignment(data []byte) (Assignment, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-
-	var assignment Assignment
-	if err := decoder.Decode(&assignment); err != nil {
-		return Assignment{}, fmt.Errorf("decode assignment: %w", err)
-	}
-	var extra interface{}
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return Assignment{}, fmt.Errorf("assignment contains more than one JSON value")
-		}
-		return Assignment{}, fmt.Errorf("decode trailing assignment data: %w", err)
-	}
-	return canonicalizeAssignment(assignment)
+func ParseAssignment(data []byte) (api.XPUAssignment, error) {
+	return api.ParseXPUAssignment(data)
 }
 
 func validateContract(contract NVIDIAContract) error {
@@ -219,7 +166,15 @@ func RunProbe(input ProbeInput) ProbeResult {
 	if level == "" {
 		level = "L0"
 	}
-	result := ProbeResult{CaseID: caseID, EvidenceLevel: level}
+	result := ProbeResult{
+		CaseID:        caseID,
+		EvidenceLevel: level,
+		Capabilities: CapabilityMatrix{
+			EnumerateInventory:     true,
+			SchedulerSelectedInput: true,
+			ValidateSelectedKey:    input.ProviderCanConfirmSelected,
+		},
+	}
 
 	if err := validateContract(input.Contract); err != nil {
 		return failResult(result, ReasonIdentityMismatch, err.Error())
@@ -227,9 +182,11 @@ func RunProbe(input ProbeInput) ProbeResult {
 	if err := validateInventory(input.Devices); err != nil {
 		return failResult(result, ReasonAssignmentInvalid, err.Error())
 	}
-	if !input.ProviderCanConfirmSelected {
-		return failResult(result, ReasonAssignmentNotEnforceable,
-			"provider did not confirm the scheduler-selected DeviceID")
+	if strings.TrimSpace(input.PodUID) == "" {
+		return failResult(result, ReasonAssignmentInvalid, "PodUID is empty")
+	}
+	if input.SourceGeneration == 0 {
+		return failResult(result, ReasonTopologyNotReady, "sourceGeneration must be greater than zero")
 	}
 
 	selectedID := normalizeDeviceID(input.SelectedDeviceID)
@@ -256,16 +213,23 @@ func RunProbe(input ProbeInput) ProbeResult {
 	if err != nil {
 		return failResult(result, ReasonAssignmentInvalid, err.Error())
 	}
-	assignment, err := canonicalizeAssignment(Assignment{
-		Version:      1,
-		ResourceName: expectedNVIDIAContract.ResourceName,
-		Provider:     expectedNVIDIAContract.ProviderID,
-		DeviceKeys:   []string{key},
+	assignment, err := canonicalizeAssignment(api.XPUAssignment{
+		Version: api.XPUAssignmentVersion,
+		Assignments: []api.XPUAssignmentEntry{{
+			Container:    input.Container,
+			ResourceName: corev1.ResourceName(expectedNVIDIAContract.ResourceName),
+			Provider:     expectedNVIDIAContract.ProviderID,
+			DeviceKeys:   []string{key},
+		}},
 	})
 	if err != nil {
 		return failResult(result, ReasonAssignmentInvalid, err.Error())
 	}
-	serialized, err := json.Marshal(assignment)
+	if !input.ProviderCanConfirmSelected {
+		return failResult(result, ReasonAssignmentNotEnforceable,
+			"provider did not confirm the scheduler-selected DeviceID")
+	}
+	serialized, err := api.MarshalXPUAssignment(assignment)
 	if err != nil {
 		return failResult(result, ReasonAssignmentInvalid, err.Error())
 	}

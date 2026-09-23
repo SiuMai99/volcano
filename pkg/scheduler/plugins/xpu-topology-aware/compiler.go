@@ -41,7 +41,7 @@ type compiledTask struct {
 
 type compiledPolicy struct {
 	policy   api.CanonicalDeviceTopologyPolicy
-	request  int64
+	request  api.XPUResourceRequest
 	groupKey *groupPolicyKey
 }
 
@@ -272,60 +272,14 @@ func selectorMatches(selector api.CanonicalLabelSelector, values map[string]stri
 	return true
 }
 
-func taskResourceRequest(task *api.TaskInfo, resourceName corev1.ResourceName) (int64, error) {
+func taskResourceRequest(task *api.TaskInfo, resourceName corev1.ResourceName) (api.XPUResourceRequest, error) {
 	if task == nil || task.Pod == nil {
-		return 0, fmt.Errorf("Pod is required")
+		return api.XPUResourceRequest{}, fmt.Errorf("Pod is required")
 	}
-	pod := task.Pod
 	if len(task.DRAResreq) != 0 || len(task.ResourceClaimKeys) != 0 || len(task.ResourceClaimDRAResreq) != 0 {
-		return 0, fmt.Errorf("M2 does not support DRA requests")
+		return api.XPUResourceRequest{}, fmt.Errorf("xPU topology Alpha does not support DRA requests")
 	}
-
-	var (
-		matched       bool
-		matchedValue  int64
-		matchedSource string
-	)
-	checkContainer := func(container corev1.Container, source string) error {
-		request, requested := container.Resources.Requests[resourceName]
-		limit, limited := container.Resources.Limits[resourceName]
-		if !requested && !limited {
-			return nil
-		}
-
-		if matched {
-			return fmt.Errorf("only one container may request device resource %s; already found in %s, also found in %s %q", resourceName, matchedSource, source, container.Name)
-		}
-		if !limited {
-			return fmt.Errorf("%s %q: device resource limit must be set", source, container.Name)
-		}
-		if limit.Sign() <= 0 || limit.MilliValue()%1000 != 0 {
-			return fmt.Errorf("%s %q: limit must be a positive integral device count", source, container.Name)
-		}
-		if requested && request.Cmp(limit) != 0 {
-			return fmt.Errorf("%s %q: request must equal limit when both are set", source, container.Name)
-		}
-
-		matched = true
-		matchedValue = limit.Value()
-		matchedSource = fmt.Sprintf("%s %q", source, container.Name)
-		return nil
-	}
-
-	for _, container := range pod.Spec.Containers {
-		if err := checkContainer(container, "regular container"); err != nil {
-			return 0, err
-		}
-	}
-	for _, container := range pod.Spec.InitContainers {
-		if err := checkContainer(container, "init container"); err != nil {
-			return 0, err
-		}
-	}
-	if !matched {
-		return 0, fmt.Errorf("device resource %s must be requested by exactly one container", resourceName)
-	}
-	return matchedValue, nil
+	return api.XPUResourceRequestForPod(task.Pod, resourceName)
 }
 
 func groupKeyFor(job *api.JobInfo, subJob api.SubJobID, policy api.CanonicalDeviceTopologyPolicy) *groupPolicyKey {
