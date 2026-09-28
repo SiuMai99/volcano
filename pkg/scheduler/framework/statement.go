@@ -25,7 +25,10 @@ package framework
 import (
 	"errors"
 	"fmt"
+	"sort"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	"volcano.sh/volcano/pkg/scheduler/api"
@@ -54,6 +57,21 @@ type operation struct {
 type Statement struct {
 	operations []operation
 	ssn        *Session
+	// xpuHardTrial permits only Session-local, speculative hard allocation.
+	// A trial Statement must never submit a Bind task.
+	xpuHardTrial bool
+	// Allocate writes Pod.Spec.NodeName before Bind. Restore the original
+	// value when a speculative hard Statement is discarded.
+	xpuHardPodNodeNames map[*corev1.Pod]string
+}
+
+// AllocationPlacement is a detached view of one new Allocate operation.
+// It deliberately exposes no TaskInfo or operation pointer to plugins.
+type AllocationPlacement struct {
+	JobID    api.JobID
+	TaskID   api.TaskID
+	PodUID   types.UID
+	NodeName string
 }
 
 // NewStatement returns new statement object
@@ -61,6 +79,33 @@ func NewStatement(ssn *Session) *Statement {
 	return &Statement{
 		ssn: ssn,
 	}
+}
+
+// NewXPUHardTrialStatement records speculative hard placements without
+// granting permission to commit or bind them.
+func NewXPUHardTrialStatement(ssn *Session) *Statement {
+	return &Statement{ssn: ssn, xpuHardTrial: true}
+}
+
+// AllocationView returns the complete, stable-sorted admission wave of new
+// Allocate operations. Pipeline and Evict operations do not enter Bind.
+func (s *Statement) AllocationView() []AllocationPlacement {
+	view := make([]AllocationPlacement, 0, len(s.operations))
+	for _, op := range s.operations {
+		if op.name != Allocate || op.task == nil || op.task.Pod == nil {
+			continue
+		}
+		view = append(view, AllocationPlacement{
+			JobID: op.task.Job, TaskID: op.task.UID, PodUID: op.task.Pod.UID, NodeName: op.task.NodeName,
+		})
+	}
+	sort.Slice(view, func(i, j int) bool {
+		if view[i].TaskID != view[j].TaskID {
+			return view[i].TaskID < view[j].TaskID
+		}
+		return view[i].JobID < view[j].JobID
+	})
+	return view
 }
 
 // AddOperation adds operation to statement
@@ -254,10 +299,12 @@ func (s *Statement) unPipeline(task *api.TaskInfo) error {
 
 // Allocate the task to node
 func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err error) {
-	if job, found := s.ssn.Jobs[task.Job]; found {
+	if job, found := s.ssn.Jobs[task.Job]; found && !s.xpuHardTrial {
 		if err := s.ssn.ValidateXPUTopologyBeforeBind(job); err != nil {
 			return err
 		}
+	} else if s.xpuHardTrial && (!found || !job.HasHardDeviceTopologyPolicy()) {
+		return fmt.Errorf("xPU hard trial requires a hard-policy Job for Task %s", task.UID)
 	}
 
 	defer func() {
@@ -270,6 +317,14 @@ func (s *Statement) Allocate(task *api.TaskInfo, nodeInfo *api.NodeInfo) (err er
 	}()
 	errInfos := make([]error, 0)
 	hostname := nodeInfo.Name
+	if s.xpuHardTrial {
+		if s.xpuHardPodNodeNames == nil {
+			s.xpuHardPodNodeNames = make(map[*corev1.Pod]string)
+		}
+		if _, found := s.xpuHardPodNodeNames[task.Pod]; !found {
+			s.xpuHardPodNodeNames[task.Pod] = task.Pod.Spec.NodeName
+		}
+	}
 	task.Pod.Spec.NodeName = hostname
 
 	// Only update status in session
@@ -381,6 +436,12 @@ func (s *Statement) unallocate(task *api.TaskInfo) error {
 	}
 	task.NodeName = ""
 	task.JobAllocatedHyperNode = ""
+	if s.xpuHardTrial && task.Pod != nil {
+		if original, found := s.xpuHardPodNodeNames[task.Pod]; found {
+			task.Pod.Spec.NodeName = original
+			delete(s.xpuHardPodNodeNames, task.Pod)
+		}
+	}
 
 	return nil
 }
@@ -410,10 +471,17 @@ func (s *Statement) Discard() {
 		}
 	}
 	s.operations = nil
+	s.xpuHardPodNodeNames = nil
 }
 
 // Commit operation for evict and pipeline
 func (s *Statement) Commit() {
+	if s.xpuHardTrial {
+		// This remains a non-binding integration seam until assignment
+		// persistence and the exact bridge are wired by later PRs.
+		s.Discard()
+		return
+	}
 	klog.V(3).Info("Committing operations ...")
 	for _, op := range s.operations {
 		op.task.ClearLastTxContext()
@@ -446,6 +514,18 @@ func (s *Statement) Commit() {
 // double-discard.
 func (s *Statement) Merge(stmts ...*Statement) {
 	for _, stmt := range stmts {
+		if stmt.xpuHardTrial {
+			s.xpuHardTrial = true
+			if s.xpuHardPodNodeNames == nil {
+				s.xpuHardPodNodeNames = make(map[*corev1.Pod]string)
+			}
+			for pod, original := range stmt.xpuHardPodNodeNames {
+				if _, found := s.xpuHardPodNodeNames[pod]; !found {
+					s.xpuHardPodNodeNames[pod] = original
+				}
+			}
+			stmt.xpuHardPodNodeNames = nil
+		}
 		s.operations = append(s.operations, stmt.operations...)
 		stmt.operations = nil
 	}

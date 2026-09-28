@@ -89,6 +89,7 @@ type Session struct {
 	// xpuTopologyManager is a process-scoped handle obtained from the cache.
 	// Session plugins may observe it but never own its lifecycle.
 	xpuTopologyManager topology.ProcessManager
+	xpuHardPlanFn      XPUHardPlanFn
 
 	Jobs           map[api.JobID]*api.JobInfo
 	Nodes          map[string]*api.NodeInfo

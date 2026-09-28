@@ -129,6 +129,9 @@ func TestOnSessionOpenWiresCompilerAndAdvisoryScorer(t *testing.T) {
 		Arguments: map[string]interface{}{ProviderArgument: MockProvider, CatalogPathArgument: "test-catalog.json"},
 	}}}}, nil)
 	defer framework.CloseSession(session)
+	if !session.HasXPUHardPlanFn() {
+		t.Fatal("xPU plugin did not register the hard Statement planner")
+	}
 
 	job := session.Jobs[api.JobID("default/train")]
 	if job == nil {

@@ -51,6 +51,38 @@ func TestCompilerBlocksHardPolicyWithoutAssignmentContract(t *testing.T) {
 	if len(result.softPolicies) != 0 {
 		t.Fatalf("hard policy compiled soft policies: %#v", result.softPolicies)
 	}
+	if len(result.hardPolicies) != 1 || result.hardPolicies[0].Group.Job != job.UID {
+		t.Fatalf("hard policy lost planning inputs: %#v", result.hardPolicies)
+	}
+}
+
+func TestCompilerRetainsAllHardPoliciesAcrossJobAndSubGroup(t *testing.T) {
+	manager := compilerTestManager(t)
+	job, task := compilerTestJob("mixed-hard", scheduling.HardDeviceTopologyMode, "local-scale-up", 1)
+	job.DeviceTopology.Policies = append(job.DeviceTopology.Policies, api.CanonicalDeviceTopologyPolicy{
+		ResourceName: compilerTestResource, Mode: scheduling.SoftDeviceTopologyMode,
+		ApplyTo:     scheduling.DeviceTopologyApplyToPod,
+		DomainClass: api.DomainClassKey{ResourceName: compilerTestResource, Scope: scheduling.DeviceTopologyDomainScopeNode, Name: "local-scale-up"},
+	})
+	subJob := job.SubJobs[job.DefaultSubJobID()]
+	subJob.DeviceTopology = api.CanonicalDeviceTopologySpec{Policies: []api.CanonicalDeviceTopologyPolicy{{
+		ResourceName: compilerTestResource, Mode: scheduling.HardDeviceTopologyMode,
+		ApplyTo:     scheduling.DeviceTopologyApplyToGroup,
+		DomainClass: api.DomainClassKey{ResourceName: compilerTestResource, Scope: scheduling.DeviceTopologyDomainScopeNode, Name: "local-scale-up"},
+	}}}
+	subJob.DeviceTopologyValid = true
+	compiler := newCompiler(manager, compilerTestSnapshot(map[string]int64{"node-a": 2}, nil), func() time.Time { return time.Unix(100, 0) })
+	result := compiler.compileTask(job, task)
+	if result.blocked == nil || result.blocked.Reason != string(topology.AssignmentNotEnforceable) {
+		t.Fatalf("hard policy blocker = %#v", result.blocked)
+	}
+	if len(result.softPolicies) != 1 || len(result.hardPolicies) != 2 {
+		t.Fatalf("compiled policies = %#v", result)
+	}
+	if result.hardPolicies[0].Group != (HardGroupRef{Job: job.UID}) ||
+		result.hardPolicies[1].Group != (HardGroupRef{Job: job.UID, SubJob: subJob.UID}) {
+		t.Fatalf("Job/SubGroup scope lost: %#v", result.hardPolicies)
+	}
 }
 
 func TestCompilerRejectsUnknownCatalogClass(t *testing.T) {

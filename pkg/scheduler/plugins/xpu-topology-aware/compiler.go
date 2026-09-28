@@ -32,10 +32,10 @@ import (
 )
 
 // compiledTask is an immutable-by-convention Session-local view of the
-// policies relevant to one Task. It never carries a DeviceKey selection: M2
-// can describe a structural preference only.
+// policies relevant to one Task. It never carries a DeviceKey selection.
 type compiledTask struct {
 	softPolicies []compiledPolicy
+	hardPolicies []HardPlanPolicy
 	blocked      *api.ValidateResult
 }
 
@@ -174,6 +174,8 @@ func (c *compiler) compileTaskUncached(job *api.JobInfo, task *api.TaskInfo) com
 	}
 
 	softPolicies := make([]compiledPolicy, 0, len(policies))
+	hardPolicies := make([]HardPlanPolicy, 0, len(policies))
+	var hardBlocker *api.ValidateResult
 	for index := range policies {
 		compiled := policies[index]
 		if !catalog.HasDomainClass(compiled.policy.DomainClass) {
@@ -197,14 +199,27 @@ func (c *compiler) compileTaskUncached(job *api.JobInfo, task *api.TaskInfo) com
 		compiled.request = request
 
 		if compiled.policy.Mode == scheduling.HardDeviceTopologyMode {
-			reason := activation.PolicyReason(true)
-			return compiledTask{blocked: blocked(string(reason),
-				"resource=%s scope=%s domainClass=%s cannot be enforced by Advisory M2",
-				compiled.policy.ResourceName, compiled.policy.DomainClass.Scope, compiled.policy.DomainClass.Name)}
+			group := HardGroupRef{Job: job.UID}
+			if compiled.groupKey != nil {
+				group.SubJob = compiled.groupKey.subJob
+			}
+			hardPolicies = append(hardPolicies, HardPlanPolicy{Policy: compiled.policy, Group: group})
+			if hardBlocker == nil {
+				reason := activation.PolicyReason(true)
+				if reason == topology.ActivationReady {
+					// PR11 can only plan. Assignment persistence and exact
+					// enforcement are still absent from the final path.
+					reason = topology.AssignmentNotEnforceable
+				}
+				hardBlocker = blocked(string(reason),
+					"resource=%s scope=%s domainClass=%s has no exact assignment final path",
+					compiled.policy.ResourceName, compiled.policy.DomainClass.Scope, compiled.policy.DomainClass.Name)
+			}
+			continue
 		}
 		softPolicies = append(softPolicies, compiled)
 	}
-	return compiledTask{softPolicies: softPolicies}
+	return compiledTask{softPolicies: softPolicies, hardPolicies: hardPolicies, blocked: hardBlocker}
 }
 
 // activationForPolicies preserves the fail-closed double opt-in and fixed

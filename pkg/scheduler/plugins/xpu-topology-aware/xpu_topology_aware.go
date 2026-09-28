@@ -189,6 +189,9 @@ func (p *plugin) OnSessionOpen(ssn *framework.Session) {
 	compiler := newCompiler(ssn.XPUTopologyManager(), ssn.DeviceTopology, p.now)
 	scorer := newSessionScorer(compiler)
 	reporter := newValidationReporter(ssn)
+	if err := ssn.AddXPUHardPlanFn((&sessionHardPlanner{ssn: ssn, compiler: compiler, now: p.now}).plan); err != nil {
+		klog.Errorf("Cannot register xPU hard planner: %v", err)
+	}
 
 	ssn.AddJobValidFn(p.Name(), func(obj interface{}) *api.ValidateResult {
 		job, ok := obj.(*api.JobInfo)
