@@ -19,60 +19,15 @@ package framework
 import (
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/types"
-
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/topology"
 )
 
 const xpuTopologyPluginName = "xpu-topology-aware"
 
-// XPUPlannedResource is one tentative scheduler-selected resource. The
-// assignment writer and exact bridge are deliberately outside this callback.
-type XPUPlannedResource struct {
-	Request    api.XPUResourceRequest
-	DeviceKeys []api.DeviceKey
-	Placements []XPUPlannedPolicyPlacement
-}
-
-// XPUHardGroupRef distinguishes a Job policy from a SubGroup policy.
-type XPUHardGroupRef struct {
-	Job    api.JobID
-	SubJob api.SubJobID
-}
-
-// XPUPlannedPolicyPlacement records the concrete domain or fabric selected
-// for a policy in the winning plan.
-type XPUPlannedPolicyPlacement struct {
-	Class       api.DomainClassKey
-	Group       *XPUHardGroupRef
-	LocalDomain *api.LocalDomainKey
-	Fabric      *api.FabricKey
-}
-
-// XPUHardAnchor is the Group policy instance selected by the planner.
-type XPUHardAnchor struct {
-	Group       XPUHardGroupRef
-	Class       api.DomainClassKey
-	LocalDomain *api.LocalDomainKey
-	Fabric      *api.FabricKey
-}
-
-type XPUPlannedTask struct {
-	TaskID    api.TaskID
-	PodUID    types.UID
-	NodeName  string
-	Resources []XPUPlannedResource
-}
-
-// XPUHardPlan is a detached value returned for one complete admission wave.
-// It authorizes neither assignment persistence nor Bind.
-type XPUHardPlan struct {
-	Tasks   []XPUPlannedTask
-	Anchors []XPUHardAnchor
-}
-
-type XPUHardPlanFn func([]AllocationPlacement) (XPUHardPlan, error)
+// XPUHardPlanFn checks a fixed admission wave without exposing tentative
+// DeviceKeys across the framework boundary before assignment preparation exists.
+type XPUHardPlanFn func([]AllocationPlacement) error
 
 // AddXPUHardPlanFn registers the Session-local, side-effect-free planner.
 // The xPU plugin is the only owner; a duplicate registration is unsafe.
@@ -113,9 +68,9 @@ func (ssn *Session) JobValidForXPUHardTrial(job *api.JobInfo) *api.ValidateResul
 
 // PlanXPUHard calls the registered plugin on a detached operation view.
 // Missing plugin is a hard-policy blocker, never an implicit success.
-func (ssn *Session) PlanXPUHard(view []AllocationPlacement) (XPUHardPlan, error) {
+func (ssn *Session) PlanXPUHard(view []AllocationPlacement) error {
 	if !ssn.HasXPUHardPlanFn() {
-		return XPUHardPlan{}, fmt.Errorf("%s: xPU hard planner is unavailable", topology.AssignmentNotEnforceable)
+		return fmt.Errorf("%s: xPU hard planner is unavailable", topology.AssignmentNotEnforceable)
 	}
 	return ssn.xpuHardPlanFn(append([]AllocationPlacement(nil), view...))
 }

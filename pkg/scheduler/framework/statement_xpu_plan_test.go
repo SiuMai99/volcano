@@ -113,7 +113,7 @@ func TestXPUHardTrialStillRunsOtherJobValidators(t *testing.T) {
 	ssn.AddJobValidFn("other", func(interface{}) *api.ValidateResult {
 		return &api.ValidateResult{Reason: "OtherPolicyRejected"}
 	})
-	if err := ssn.AddXPUHardPlanFn(func([]AllocationPlacement) (XPUHardPlan, error) { return XPUHardPlan{}, nil }); err != nil {
+	if err := ssn.AddXPUHardPlanFn(func([]AllocationPlacement) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if got := ssn.JobValidForXPUHardTrial(job); got == nil || got.Reason != "OtherPolicyRejected" {

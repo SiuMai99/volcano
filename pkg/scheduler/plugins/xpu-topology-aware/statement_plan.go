@@ -33,12 +33,19 @@ type sessionHardPlanner struct {
 	now      func() time.Time
 }
 
-func (p *sessionHardPlanner) plan(view []framework.AllocationPlacement) (framework.XPUHardPlan, error) {
+func (p *sessionHardPlanner) check(view []framework.AllocationPlacement) error {
+	_, err := p.plan(view)
+	return err
+}
+
+// plan keeps the selected keys plugin-local. PR12 will define the final
+// assignment handoff when it has a production consumer for the winning plan.
+func (p *sessionHardPlanner) plan(view []framework.AllocationPlacement) (HardPlan, error) {
 	if p == nil || p.ssn == nil || p.compiler == nil {
-		return framework.XPUHardPlan{}, fmt.Errorf("%s: xPU hard planner is unavailable", topology.AssignmentNotEnforceable)
+		return HardPlan{}, fmt.Errorf("%s: xPU hard planner is unavailable", topology.AssignmentNotEnforceable)
 	}
 	if p.ssn.DeviceTopology != p.compiler.snapshot {
-		return framework.XPUHardPlan{}, fmt.Errorf("%s: Session topology view changed after policy compilation", api.XPUTopologyDataNotReadyReason)
+		return HardPlan{}, fmt.Errorf("%s: Session topology view changed after policy compilation", api.XPUTopologyDataNotReadyReason)
 	}
 	now := p.now
 	if now == nil {
@@ -48,25 +55,25 @@ func (p *sessionHardPlanner) plan(view []framework.AllocationPlacement) (framewo
 	seen := make(map[api.TaskID]struct{}, len(view))
 	for _, placement := range view {
 		if _, exists := seen[placement.TaskID]; exists {
-			return framework.XPUHardPlan{}, fmt.Errorf("%s: duplicate Task %s in admission wave", api.XPUTopologyPolicyInvalidReason, placement.TaskID)
+			return HardPlan{}, fmt.Errorf("%s: duplicate Task %s in admission wave", api.XPUTopologyPolicyInvalidReason, placement.TaskID)
 		}
 		seen[placement.TaskID] = struct{}{}
 		job := p.ssn.Jobs[placement.JobID]
 		if job == nil || !job.HasHardDeviceTopologyPolicy() {
-			return framework.XPUHardPlan{}, fmt.Errorf("%s: Task %s has no hard-policy Job", api.XPUTopologyPolicyInvalidReason, placement.TaskID)
+			return HardPlan{}, fmt.Errorf("%s: Task %s has no hard-policy Job", api.XPUTopologyPolicyInvalidReason, placement.TaskID)
 		}
 		task := job.Tasks[placement.TaskID]
 		if task == nil || task.Pod == nil || task.Pod.UID != placement.PodUID || task.NodeName != placement.NodeName {
-			return framework.XPUHardPlan{}, fmt.Errorf("%s: Task %s changed after Statement allocation", api.XPUTopologyDataNotReadyReason, placement.TaskID)
+			return HardPlan{}, fmt.Errorf("%s: Task %s changed after Statement allocation", api.XPUTopologyDataNotReadyReason, placement.TaskID)
 		}
 		node := p.ssn.Nodes[placement.NodeName]
 		if node == nil || node.Node == nil || input.Snapshot == nil ||
 			input.Snapshot.Nodes[placement.NodeName].Identity.UID != node.Node.UID || node.Node.UID == "" {
-			return framework.XPUHardPlan{}, fmt.Errorf("%s: Node identity for Task %s is not paired with topology", api.XPUTopologyDataNotReadyReason, placement.TaskID)
+			return HardPlan{}, fmt.Errorf("%s: Node identity for Task %s is not paired with topology", api.XPUTopologyDataNotReadyReason, placement.TaskID)
 		}
 		compiled := p.compiler.compileTask(job, task)
 		if compiled.blocked != nil && compiled.blocked.Reason != string(topology.AssignmentNotEnforceable) {
-			return framework.XPUHardPlan{}, fmt.Errorf("%s: %s", compiled.blocked.Reason, compiled.blocked.Message)
+			return HardPlan{}, fmt.Errorf("%s: %s", compiled.blocked.Reason, compiled.blocked.Message)
 		}
 		if len(compiled.hardPolicies) == 0 {
 			continue
@@ -76,7 +83,7 @@ func (p *sessionHardPlanner) plan(view []framework.AllocationPlacement) (framewo
 		})
 	}
 	if len(input.Tasks) == 0 {
-		return framework.XPUHardPlan{}, nil
+		return HardPlan{}, nil
 	}
 	// Pod-derived anchors and bound DeviceKey occupancy are supplied by PR12.
 	// Until then, an existing bound member cannot be treated as an empty anchor.
@@ -94,41 +101,13 @@ func (p *sessionHardPlanner) plan(view []framework.AllocationPlacement) (framewo
 			if _, current := seen[member.UID]; !current && member.NodeName != "" &&
 				(member.Status == api.Binding || member.Status == api.Bound || member.Status == api.Running) &&
 				len(p.compiler.compileTask(job, member).hardPolicies) != 0 {
-				return framework.XPUHardPlan{}, fmt.Errorf("%s: bound member %s requires Pod-derived anchor recovery", api.XPUTopologyDataNotReadyReason, member.UID)
+				return HardPlan{}, fmt.Errorf("%s: bound member %s requires Pod-derived anchor recovery", api.XPUTopologyDataNotReadyReason, member.UID)
 			}
 		}
 	}
 	plan, failure := PlanHardGroup(input)
 	if failure != nil {
-		return framework.XPUHardPlan{}, fmt.Errorf("%s: %s", failure.Reason, failure.Detail)
+		return HardPlan{}, fmt.Errorf("%s: %s", failure.Reason, failure.Detail)
 	}
-	result := framework.XPUHardPlan{Tasks: make([]framework.XPUPlannedTask, 0, len(plan.Tasks))}
-	for _, item := range plan.Tasks {
-		planned := framework.XPUPlannedTask{TaskID: item.TaskID, PodUID: item.PodUID, NodeName: item.NodeName}
-		for _, resource := range item.Resources {
-			plannedResource := framework.XPUPlannedResource{
-				Request: resource.Request, DeviceKeys: append([]api.DeviceKey(nil), resource.DeviceKeys...),
-			}
-			for _, placement := range resource.Placements {
-				converted := framework.XPUPlannedPolicyPlacement{
-					Class: placement.Class, LocalDomain: copyLocal(placement.LocalDomain), Fabric: copyFabric(placement.Fabric),
-				}
-				if placement.Group != nil {
-					converted.Group = &framework.XPUHardGroupRef{Job: placement.Group.Job, SubJob: placement.Group.SubJob}
-				}
-				plannedResource.Placements = append(plannedResource.Placements, converted)
-			}
-			planned.Resources = append(planned.Resources, plannedResource)
-		}
-		result.Tasks = append(result.Tasks, planned)
-	}
-	for _, anchor := range plan.Anchors {
-		result.Anchors = append(result.Anchors, framework.XPUHardAnchor{
-			Group:       framework.XPUHardGroupRef{Job: anchor.Group.Job, SubJob: anchor.Group.SubJob},
-			Class:       anchor.Class,
-			LocalDomain: copyLocal(anchor.LocalDomain),
-			Fabric:      copyFabric(anchor.Fabric),
-		})
-	}
-	return result, nil
+	return plan, nil
 }

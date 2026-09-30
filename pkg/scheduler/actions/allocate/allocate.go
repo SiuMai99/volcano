@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -405,6 +404,16 @@ func (alloc *Action) allocateResourcesForQueues(queues *util.PriorityQueue, jobs
 
 				if stmt != nil && ssn.JobReady(job) { // do not commit stmt when job is pipelined
 					if job.HasHardDeviceTopologyPolicy() {
+						// The ordinary path has one candidate Statement rather than
+						// HyperNode trials. Check it before the final replan.
+						if err := ssn.PlanXPUHard(stmt.AllocationView()); err != nil {
+							// PR11 leaves this fixed Node choice Pending. Hard Bind
+							// needs topology-aware candidate handling before enablement.
+							klog.V(3).InfoS("xPU ordinary trial cannot be planned", "job", job.UID, "err", err)
+							stmt.Discard()
+							queues.Push(queue)
+							continue
+						}
 						alloc.finishXPUHardTrial(job, stmt)
 						queues.Push(queue)
 						continue
@@ -443,13 +452,11 @@ func (alloc *Action) allocateResourcesForQueues(queues *util.PriorityQueue, jobs
 // finishXPUHardTrial re-plans from the recovered winning Statement. PR11 has
 // no assignment persistence or exact bridge, so a valid winner is discarded
 // before Commit can enqueue any Bind task.
-func (alloc *Action) finishXPUHardTrial(job *api.JobInfo, stmt *framework.Statement) (framework.XPUHardPlan, error) {
-	plan, err := alloc.session.PlanXPUHard(stmt.AllocationView())
-	if err != nil {
+func (alloc *Action) finishXPUHardTrial(job *api.JobInfo, stmt *framework.Statement) {
+	if err := alloc.session.PlanXPUHard(stmt.AllocationView()); err != nil {
 		klog.V(3).InfoS("xPU winning Statement cannot be planned", "job", job.UID, "err", err)
 	}
 	stmt.Discard()
-	return plan, err
 }
 
 func (alloc *Action) newStatement(job *api.JobInfo) *framework.Statement {
@@ -476,79 +483,46 @@ func (alloc *Action) allocateForJob(job *api.JobInfo, jobWorksheet *JobWorksheet
 		subJobsAllocationScores := make(map[string]float64)   // save the subJobs allocation score of the job allocated to a hyperNode
 
 		for _, hyperNode := range hyperNodes {
-			hard := job.HasHardDeviceTopologyPolicy()
-			states := []map[string]struct{}{{}}
-			visited := map[string]struct{}{"": {}}
-			maxTrials := 1
-			if hard {
-				maxTrials = maxXPUHardNodeTrials
+			var stmtList []*framework.Statement
+			var subJobsAllocationScore float64
+
+			job.ResetFitErr()
+			jobWorksheetCopy := jobWorksheet.Clone()
+			klog.V(3).InfoS("Try to allocate resource for job in hyperNode", "job", job.UID, "hyperNode", hyperNode.Name)
+
+			for !jobWorksheetCopy.subJobs.Empty() {
+				subJob := jobWorksheetCopy.subJobs.Pop().(*api.SubJobInfo)
+				subJobWorksheet := jobWorksheetCopy.subJobWorksheets[subJob.UID]
+				stmt, allocationScore := alloc.allocateForSubJob(subJob, subJobWorksheet, hyperNode)
+				if stmt != nil && len(stmt.Operations()) > 0 {
+					stmtList = append(stmtList, stmt)
+					subJobsAllocationScore += allocationScore
+					if !subJobWorksheet.Empty() {
+						jobWorksheetCopy.subJobs.Push(subJob)
+					}
+					if ssn.JobReady(job) {
+						break
+					}
+				}
 			}
-			attempt := 0
-			for ; len(states) != 0 && attempt < maxTrials; attempt++ {
-				excluded := states[0]
-				states = states[1:]
-				var stmtList []*framework.Statement
-				var subJobsAllocationScore float64
+			alloc.recorder.RecoverSubJobStatus(job)
 
-				// Rebuild each Job candidate from a clean worksheet and the
-				// current Session state. A failed complete Group plan can require
-				// changing an earlier SubGroup's ordinary Node choice.
-				job.ResetFitErr()
-				jobWorksheetCopy := jobWorksheet.Clone()
-				klog.V(3).InfoS("Try to allocate resource for job in hyperNode", "job", job.UID, "hyperNode", hyperNode.Name)
-
-				for !jobWorksheetCopy.subJobs.Empty() {
-					subJob := jobWorksheetCopy.subJobs.Pop().(*api.SubJobInfo)
-					subJobWorksheet := jobWorksheetCopy.subJobWorksheets[subJob.UID]
-
-					var prior []framework.AllocationPlacement
-					for _, previous := range stmtList {
-						prior = append(prior, previous.AllocationView()...)
-					}
-					stmt, allocationScore := alloc.allocateForSubJob(subJob, subJobWorksheet, hyperNode, prior, excluded)
-					if stmt != nil && len(stmt.Operations()) > 0 {
-						stmtList = append(stmtList, stmt)
-						subJobsAllocationScore += allocationScore
-						if !subJobWorksheet.Empty() {
-							jobWorksheetCopy.subJobs.Push(subJob)
-						}
-						if ssn.JobReady(job) {
-							break
-						}
-					}
-				}
-				alloc.recorder.RecoverSubJobStatus(job)
-
-				mergedStmt := framework.SaveOperations(stmtList...)
-				view := mergedStmt.AllocationView()
-				feasible := len(mergedStmt.Operations()) != 0
-				if feasible && hard {
-					if _, err := ssn.PlanXPUHard(view); err != nil {
-						klog.V(3).InfoS("xPU Job trial cannot be planned", "job", job.UID, "hyperNode", hyperNode.Name, "err", err)
-						feasible = false
-					}
-				}
-				ready := ssn.JobReady(job) || ssn.JobPipelined(job)
-				if feasible && ready {
-					stmtBackup[hyperNode.Name] = mergedStmt
-					jobWorksheetsBackup[hyperNode.Name] = jobWorksheetCopy
-					subJobsAllocationScores[hyperNode.Name] = subJobsAllocationScore
-				}
-				for _, stmt := range stmtList {
-					stmt.Discard()
-				}
-				if hard && !ready {
+			mergedStmt := framework.SaveOperations(stmtList...)
+			ready := ssn.JobReady(job) || ssn.JobPipelined(job)
+			feasible := len(mergedStmt.Operations()) != 0 && ready
+			if feasible && job.HasHardDeviceTopologyPolicy() {
+				if err := ssn.PlanXPUHard(mergedStmt.AllocationView()); err != nil {
+					klog.V(3).InfoS("xPU complete Job trial cannot be planned", "job", job.UID, "hyperNode", hyperNode.Name, "err", err)
 					feasible = false
 				}
-				if feasible {
-					break
-				}
-				if hard {
-					states = enqueueXPUExclusions(states, visited, excluded, view)
-				}
 			}
-			if hard && len(states) != 0 {
-				klog.V(3).InfoS("XPUTopologyUnavailable: Job Node trial budget exhausted", "job", job.UID, "hyperNode", hyperNode.Name, "attempts", attempt)
+			if feasible {
+				stmtBackup[hyperNode.Name] = mergedStmt
+				jobWorksheetsBackup[hyperNode.Name] = jobWorksheetCopy
+				subJobsAllocationScores[hyperNode.Name] = subJobsAllocationScore
+			}
+			for _, stmt := range stmtList {
+				stmt.Discard()
 			}
 		}
 
@@ -565,6 +539,8 @@ func (alloc *Action) allocateForJob(job *api.JobInfo, jobWorksheet *JobWorksheet
 
 		// recover the stmt
 		bestStmt := stmtBackup[bestHyperNode]
+		// SaveOperations snapshots operations but not the trial flag. Recover
+		// into a new hard trial so a winning hard Job still cannot Bind.
 		finalStmt := alloc.newStatement(job)
 		if err = finalStmt.RecoverOperations(bestStmt); err != nil {
 			klog.ErrorS(err, "Failed to recover operations", "job", job.UID, "hyperNode", bestHyperNode)
@@ -584,7 +560,7 @@ func (alloc *Action) allocateForJob(job *api.JobInfo, jobWorksheet *JobWorksheet
 	return nil
 }
 
-func (alloc *Action) allocateForSubJob(subJob *api.SubJobInfo, subJobWorksheet *SubJobWorksheet, hyperNodeForJob *api.HyperNodeInfo, prior []framework.AllocationPlacement, excluded map[string]struct{}) (*framework.Statement, float64) {
+func (alloc *Action) allocateForSubJob(subJob *api.SubJobInfo, subJobWorksheet *SubJobWorksheet, hyperNodeForJob *api.HyperNodeInfo) (*framework.Statement, float64) {
 	ssn := alloc.session
 	job := ssn.Jobs[subJob.Job]
 
@@ -598,7 +574,7 @@ func (alloc *Action) allocateForSubJob(subJob *api.SubJobInfo, subJobWorksheet *
 		"taskNum", subJobWorksheet.tasks.Len())
 
 	if subJob.NominatedHyperNode != "" {
-		if stmt, score, ok := alloc.allocateFromNominationWithPrior(subJob, subJobWorksheet, hyperNodeForJob, prior, excluded); ok {
+		if stmt, score, ok := alloc.allocateFromNomination(subJob, subJobWorksheet, hyperNodeForJob); ok {
 			return stmt, score
 		}
 	}
@@ -615,7 +591,7 @@ func (alloc *Action) allocateForSubJob(subJob *api.SubJobInfo, subJobWorksheet *
 
 			klog.V(3).InfoS("Try to allocate resource for tasks in subJob", "job", subJob.Job,
 				"subJob", subJob.UID, "taskNum", subJobWorksheetCopy.tasks.Len(), "hyperNode", hyperNode.Name)
-			stmt := alloc.allocateResourcesForTasksWithPrior(subJob, subJobWorksheetCopy.tasks, hyperNode.Name, prior, excluded)
+			stmt := alloc.allocateResourcesForTasks(subJob, subJobWorksheetCopy.tasks, hyperNode.Name)
 
 			if stmt != nil && len(stmt.Operations()) > 0 {
 				stmtBackup[hyperNode.Name] = framework.SaveOperations(stmt)  // backup successful solution
@@ -715,18 +691,13 @@ type nominationPlanEntry struct {
 // the gradient search. On any validation miss it clears the nomination so
 // the caller falls back to the regular allocate path.
 func (alloc *Action) allocateFromNomination(subJob *api.SubJobInfo, subJobWorksheet *SubJobWorksheet, hyperNodeForJob *api.HyperNodeInfo) (stmt *framework.Statement, score float64, ok bool) {
-	return alloc.allocateFromNominationWithPrior(subJob, subJobWorksheet, hyperNodeForJob, nil, nil)
-}
-
-func (alloc *Action) allocateFromNominationWithPrior(subJob *api.SubJobInfo, subJobWorksheet *SubJobWorksheet, hyperNodeForJob *api.HyperNodeInfo, prior []framework.AllocationPlacement, excluded map[string]struct{}) (stmt *framework.Statement, score float64, ok bool) {
 	ssn := alloc.session
 	job := ssn.Jobs[subJob.Job]
 	queue := ssn.Queues[job.Queue]
 	pinned := subJob.NominatedHyperNode
-	invalidateOnFailure := true
 
 	defer func() {
-		if !ok && invalidateOnFailure {
+		if !ok {
 			invalidateSubJobNomination(subJob, subJobWorksheet)
 		}
 	}()
@@ -748,15 +719,6 @@ func (alloc *Action) allocateFromNominationWithPrior(subJob *api.SubJobInfo, sub
 	if !validated {
 		return nil, 0, false
 	}
-	if job.HasHardDeviceTopologyPolicy() {
-		for _, placement := range plan {
-			if _, banned := excluded[string(placement.task.UID)+"\x00"+placement.node.Name]; banned {
-				invalidateOnFailure = false
-				return nil, 0, false
-			}
-		}
-	}
-
 	stmt = alloc.newStatement(job)
 	for _, p := range plan {
 		if subJob.WithNetworkTopology() {
@@ -769,14 +731,6 @@ func (alloc *Action) allocateFromNominationWithPrior(subJob *api.SubJobInfo, sub
 			return nil, 0, false
 		}
 	}
-	if job.HasHardDeviceTopologyPolicy() {
-		if _, err := ssn.PlanXPUHard(append(append([]framework.AllocationPlacement(nil), prior...), stmt.AllocationView()...)); err != nil {
-			klog.V(3).InfoS("Nominated xPU placement cannot be planned", "subJob", subJob.UID, "err", err)
-			stmt.Discard()
-			return nil, 0, false
-		}
-	}
-
 	// Validation ran on a clone of tasks; drain the real worksheet so
 	// allocateForSubJob's caller observes Empty() and does not re-enqueue
 	// this subJob into the gradient search.
@@ -858,84 +812,7 @@ func invalidateSubJobNomination(subJob *api.SubJobInfo, subJobWorksheet *SubJobW
 	}
 }
 
-const maxXPUHardNodeTrials = 64
-
-// allocateResourcesForTasks explores ordinary Predicate-approved Node choices
-// for hard xPU trials. PR10 selects DeviceKeys on fixed Nodes; a failed fixed
-// placement must not make another ordinary Node candidate disappear.
 func (alloc *Action) allocateResourcesForTasks(subJob *api.SubJobInfo, tasks *util.PriorityQueue, hyperNode string) *framework.Statement {
-	return alloc.allocateResourcesForTasksWithPrior(subJob, tasks, hyperNode, nil, nil)
-}
-
-func (alloc *Action) allocateResourcesForTasksWithPrior(subJob *api.SubJobInfo, tasks *util.PriorityQueue, hyperNode string, prior []framework.AllocationPlacement, baseExcluded map[string]struct{}) *framework.Statement {
-	job := alloc.session.Jobs[subJob.Job]
-	if !job.HasHardDeviceTopologyPolicy() {
-		stmt, _ := alloc.allocateResourcesForTasksOnce(subJob, tasks, hyperNode, nil)
-		return stmt
-	}
-
-	original := tasks.Clone()
-	initial := make(map[string]struct{}, len(baseExcluded))
-	for key := range baseExcluded {
-		initial[key] = struct{}{}
-	}
-	states := []map[string]struct{}{initial}
-	visited := map[string]struct{}{xpuExclusionKey(initial): {}}
-	attempts := 0
-	for ; len(states) != 0 && attempts < maxXPUHardNodeTrials; attempts++ {
-		excluded := states[0]
-		states = states[1:]
-		job.ResetSubJobFitErr(subJob.UID)
-		candidateTasks := original.Clone()
-		stmt, placements := alloc.allocateResourcesForTasksOnce(subJob, candidateTasks, hyperNode, excluded)
-		if stmt != nil {
-			admission := append(append([]framework.AllocationPlacement(nil), prior...), placements...)
-			if _, err := alloc.session.PlanXPUHard(admission); err == nil {
-				*tasks = *candidateTasks
-				return stmt
-			} else {
-				klog.V(4).InfoS("xPU Node placement trial failed", "subJob", subJob.UID, "err", err)
-			}
-			stmt.Discard()
-		}
-		states = enqueueXPUExclusions(states, visited, excluded, placements)
-	}
-	if len(states) != 0 {
-		klog.V(3).InfoS("XPUTopologyUnavailable: SubJob Node trial budget exhausted", "subJob", subJob.UID, "attempts", attempts)
-	}
-	return nil
-}
-
-func xpuExclusionKey(excluded map[string]struct{}) string {
-	keys := make([]string, 0, len(excluded))
-	for key := range excluded {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return strings.Join(keys, "\x01")
-}
-
-func enqueueXPUExclusions(states []map[string]struct{}, visited map[string]struct{}, excluded map[string]struct{}, placements []framework.AllocationPlacement) []map[string]struct{} {
-	for _, placement := range placements {
-		pair := string(placement.TaskID) + "\x00" + placement.NodeName
-		if _, alreadyExcluded := excluded[pair]; alreadyExcluded {
-			continue
-		}
-		next := make(map[string]struct{}, len(excluded)+1)
-		for key := range excluded {
-			next[key] = struct{}{}
-		}
-		next[pair] = struct{}{}
-		stateKey := xpuExclusionKey(next)
-		if _, exists := visited[stateKey]; !exists {
-			visited[stateKey] = struct{}{}
-			states = append(states, next)
-		}
-	}
-	return states
-}
-
-func (alloc *Action) allocateResourcesForTasksOnce(subJob *api.SubJobInfo, tasks *util.PriorityQueue, hyperNode string, excluded map[string]struct{}) (*framework.Statement, []framework.AllocationPlacement) {
 	ssn := alloc.session
 
 	job := ssn.Jobs[subJob.Job]
@@ -943,7 +820,7 @@ func (alloc *Action) allocateResourcesForTasksOnce(subJob *api.SubJobInfo, tasks
 	nodes, exist := ssn.RealNodesList[hyperNode]
 	if !exist || len(nodes) == 0 {
 		klog.V(4).InfoS("There is no node in hyperNode", "job", job.UID, "hyperNode", hyperNode)
-		return nil, nil
+		return nil
 	}
 
 	nodeNameSet := make(map[string]struct{}, len(nodes))
@@ -1046,19 +923,6 @@ func (alloc *Action) allocateResourcesForTasksOnce(subJob *api.SubJobInfo, tasks
 			}
 			break
 		}
-		if len(excluded) != 0 {
-			predicateNodes = withoutExcludedXPUNodes(task.UID, predicateNodes, excluded)
-			if len(predicateNodes) == 0 && task.Pod.Status.NominatedNodeName != "" {
-				// A failed topology trial invalidates only this tentative Node
-				// choice. Ordinary candidates remain available to this retry.
-				allCandidates, _ := ph.PredicateNodes(task, nodes, alloc.predicate, alloc.enablePredicateErrorCache, ssn.NodesInShard)
-				predicateNodes = withoutExcludedXPUNodes(task.UID, allCandidates, excluded)
-			}
-			if len(predicateNodes) == 0 {
-				continue
-			}
-		}
-
 		if subJob.WithNetworkTopology() {
 			task.JobAllocatedHyperNode = allocatedHyperNode
 		}
@@ -1087,25 +951,14 @@ func (alloc *Action) allocateResourcesForTasksOnce(subJob *api.SubJobInfo, tasks
 		if subJob.IsSoftTopologyMode() {
 			subJob.AllocatedHyperNode = allocatedHyperNode
 		}
-		return stmt, stmt.AllocationView()
+		return stmt
 	} else if ssn.SubJobPipelined(job, subJob) {
 		klog.V(3).InfoS("SubJob pipelined, return statement", "job", job.UID, "subJob", subJob.UID)
-		return stmt, stmt.AllocationView()
+		return stmt
 	}
 
-	view := stmt.AllocationView()
 	stmt.Discard()
-	return nil, view
-}
-
-func withoutExcludedXPUNodes(taskID api.TaskID, nodes []*api.NodeInfo, excluded map[string]struct{}) []*api.NodeInfo {
-	allowed := make([]*api.NodeInfo, 0, len(nodes))
-	for _, node := range nodes {
-		if _, banned := excluded[string(taskID)+"\x00"+node.Name]; !banned {
-			allowed = append(allowed, node)
-		}
-	}
-	return allowed
+	return nil
 }
 
 // getNewAllocatedHyperNode Obtain the newly allocated hyperNode for the job in soft topology mode
@@ -1193,6 +1046,8 @@ func (alloc *Action) prioritizeNodes(ssn *framework.Session, task *api.TaskInfo,
 }
 
 func (alloc *Action) allocateResourcesForTask(stmt *framework.Statement, task *api.TaskInfo, node *api.NodeInfo, job *api.JobInfo) (err error) {
+	// Hard xPU placement is speculative in PR11, so it must not report an
+	// end-to-end scheduling success until a later final path can Bind it.
 	// Allocate idle resource to the task.
 	if task.InitResreq.LessEqual(node.Idle, api.Zero) {
 		klog.V(3).Infof("Binding Task <%v/%v> to node <%v>", task.Namespace, task.Name, node.Name)
