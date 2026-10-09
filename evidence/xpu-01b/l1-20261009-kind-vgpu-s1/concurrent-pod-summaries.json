@@ -1,0 +1,40 @@
+[
+  {
+    "namespace": "xpu01b-probe",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "creationTimestamp": "2026-10-09T09:27:18Z",
+    "node": "xpu01b-probe-1009-worker",
+    "phase": "Running",
+    "annotations": {
+      "allowlist": "GPU-01000100-0000-0000-0000-000000000000",
+      "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+      "devicesToAllocate": "",
+      "bindPhase": "success"
+    },
+    "limits": {
+      "volcano.sh/vgpu-cores": "100",
+      "volcano.sh/vgpu-memory": "1",
+      "volcano.sh/vgpu-number": "1"
+    }
+  },
+  {
+    "namespace": "xpu01b-probe",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "creationTimestamp": "2026-10-09T09:27:18Z",
+    "node": "xpu01b-probe-1009-worker",
+    "phase": "Running",
+    "annotations": {
+      "allowlist": "GPU-01000100-0000-0000-0000-000000000001",
+      "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+      "devicesToAllocate": "",
+      "bindPhase": "success"
+    },
+    "limits": {
+      "volcano.sh/vgpu-cores": "100",
+      "volcano.sh/vgpu-memory": "1",
+      "volcano.sh/vgpu-number": "1"
+    }
+  }
+]

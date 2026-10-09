@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: concurrent-a
+  namespace: xpu01b-probe
+  annotations:
+    volcano.sh/vgpu-mode: hami-core
+    volcano.sh/vgpu-use-gpuuuid: GPU-01000100-0000-0000-0000-000000000000
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: docker.io/library/busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c"]
+    args: ["sleep 3600"]
+    env:
+    - name: CUDA_DISABLE_CONTROL
+      value: "true"
+    resources:
+      limits:
+        volcano.sh/vgpu-number: "1"
+        volcano.sh/vgpu-memory: "1"
+        volcano.sh/vgpu-cores: "100"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: concurrent-b
+  namespace: xpu01b-probe
+  annotations:
+    volcano.sh/vgpu-mode: hami-core
+    volcano.sh/vgpu-use-gpuuuid: GPU-01000100-0000-0000-0000-000000000001
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: docker.io/library/busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c"]
+    args: ["sleep 3600"]
+    env:
+    - name: CUDA_DISABLE_CONTROL
+      value: "true"
+    resources:
+      limits:
+        volcano.sh/vgpu-number: "1"
+        volcano.sh/vgpu-memory: "1"
+        volcano.sh/vgpu-cores: "100"

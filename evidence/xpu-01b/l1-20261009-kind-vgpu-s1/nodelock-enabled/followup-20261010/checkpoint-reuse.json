@@ -1,0 +1,85 @@
+{
+  "initial": {
+    "podUID": "eca20e73-a206-45ba-a9b9-c4fe39473fb8",
+    "phase": "Running",
+    "assignment": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "containerVisibleUUID": "GPU-01000100-0000-0000-0000-000000000001",
+    "podResourcesDeviceIDs": [
+      "GPU-01000100-0000-0000-0000-000000000000-0"
+    ],
+    "preCheckpointVGPU": [
+      {
+        "podUID": "3f46da77-021d-4555-989e-943752395934",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000-0"
+        ]
+      },
+      {
+        "podUID": "64efd216-3a53-450a-99b8-217ee9acaea0",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001-0"
+        ]
+      }
+    ],
+    "afterAllocationCheckpointVGPU": [
+      {
+        "podUID": "eca20e73-a206-45ba-a9b9-c4fe39473fb8",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000-0"
+        ],
+        "responseMountPodUIDs": [
+          "eca20e73-a206-45ba-a9b9-c4fe39473fb8"
+        ],
+        "responseInjectedUUIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001"
+        ]
+      }
+    ]
+  },
+  "afterLastRound": {
+    "podUID": "d779af7f-e80a-459e-9e6c-09ce71323eda",
+    "phase": "Running",
+    "assignment": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "containerVisibleUUID": "GPU-01000100-0000-0000-0000-000000000001",
+    "podResourcesDeviceIDs": [
+      "GPU-01000100-0000-0000-0000-000000000000-0"
+    ],
+    "preCheckpointVGPU": [
+      {
+        "podUID": "35a02377-1c2e-45a6-9342-0bebfd09aebb",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000-0"
+        ]
+      },
+      {
+        "podUID": "7a684f96-d4d9-48b6-8550-76230dcabb39",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001-0"
+        ]
+      }
+    ],
+    "afterAllocationCheckpointVGPU": [
+      {
+        "podUID": "d779af7f-e80a-459e-9e6c-09ce71323eda",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000-0"
+        ],
+        "responseMountPodUIDs": [
+          "d779af7f-e80a-459e-9e6c-09ce71323eda"
+        ],
+        "responseInjectedUUIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001"
+        ]
+      }
+    ]
+  },
+  "finalPodCount": 0,
+  "finalNodeAllocatableVGPU": "2",
+  "finalNodeLock": null
+}

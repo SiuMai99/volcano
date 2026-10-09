@@ -1,0 +1,19 @@
+{
+  "observedAt": "2026-10-09T17:14:51Z",
+  "vgpuNumberPodEntries": [
+    {
+      "podUID": "3f46da77-021d-4555-989e-943752395934",
+      "container": "probe",
+      "deviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000000-0"
+      ]
+    },
+    {
+      "podUID": "64efd216-3a53-450a-99b8-217ee9acaea0",
+      "container": "probe",
+      "deviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000001-0"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+[
+  {
+    "time": "2026-10-09T10:13:57Z",
+    "name": "concurrent-a",
+    "reason": "Scheduled",
+    "message": "Successfully assigned xpu01b-probe/concurrent-a to xpu01b-lock-1009-worker"
+  },
+  {
+    "time": "2026-10-09T10:13:58Z",
+    "name": "concurrent-a",
+    "reason": "Pulled",
+    "message": "Container image \"docker.io/library/busybox:1.36.1\" already present on machine"
+  },
+  {
+    "time": "2026-10-09T10:13:58Z",
+    "name": "concurrent-a",
+    "reason": "Created",
+    "message": "Created container: probe"
+  },
+  {
+    "time": "2026-10-09T10:13:58Z",
+    "name": "concurrent-a",
+    "reason": "Started",
+    "message": "Started container probe"
+  },
+  {
+    "time": "2026-10-09T10:13:57Z",
+    "name": "concurrent-b",
+    "reason": "FailedScheduling",
+    "message": "pod group is not ready, 1 Pending, 1 minAvailable; Pending: 1 Unschedulable"
+  },
+  {
+    "time": "2026-10-09T10:13:59Z",
+    "name": "concurrent-b",
+    "reason": "Scheduled",
+    "message": "Successfully assigned xpu01b-probe/concurrent-b to xpu01b-lock-1009-worker"
+  },
+  {
+    "time": "2026-10-09T10:13:59Z",
+    "name": "concurrent-b",
+    "reason": "Pulled",
+    "message": "Container image \"docker.io/library/busybox:1.36.1\" already present on machine"
+  },
+  {
+    "time": "2026-10-09T10:13:59Z",
+    "name": "concurrent-b",
+    "reason": "Created",
+    "message": "Created container: probe"
+  },
+  {
+    "time": "2026-10-09T10:13:59Z",
+    "name": "concurrent-b",
+    "reason": "Started",
+    "message": "Started container probe"
+  },
+  {
+    "time": "2026-10-09T10:13:57Z",
+    "name": "podgroup-3f46da77-021d-4555-989e-943752395934",
+    "reason": "Unschedulable",
+    "message": "0/1 tasks in gang unschedulable: pod group is ready, 1 Binding, 1 minAvailable"
+  },
+  {
+    "time": "2026-10-09T10:14:00Z",
+    "name": "podgroup-3f46da77-021d-4555-989e-943752395934",
+    "reason": "Scheduled",
+    "message": "pod group is ready"
+  },
+  {
+    "time": "2026-10-09T10:13:57Z",
+    "name": "podgroup-64efd216-3a53-450a-99b8-217ee9acaea0",
+    "reason": "Unschedulable",
+    "message": "1/1 tasks in gang unschedulable: pod group is not ready, 1 Pending, 1 minAvailable; Pending: 1 Unschedulable"
+  },
+  {
+    "time": "2026-10-09T10:13:59Z",
+    "name": "podgroup-64efd216-3a53-450a-99b8-217ee9acaea0",
+    "reason": "Unschedulable",
+    "message": "0/1 tasks in gang unschedulable: pod group is ready, 1 Binding, 1 minAvailable"
+  },
+  {
+    "time": "2026-10-09T10:14:00Z",
+    "name": "podgroup-64efd216-3a53-450a-99b8-217ee9acaea0",
+    "reason": "Scheduled",
+    "message": "pod group is ready"
+  }
+]

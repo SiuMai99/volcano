@@ -1,0 +1,3 @@
+{
+  "configuration": "actions: \"enqueue, allocate, reclaim, preempt, backfill\"\ntiers:\n- plugins:\n  - name: priority\n  - name: gang\n    enablePreemptable: true\n  - name: conformance\n- plugins:\n  - name: overcommit\n  - name: drf\n    enablePreemptable: true\n  - name: deviceshare\n    arguments:\n      deviceshare.VGPUEnable: true\n      deviceshare.NodeLockEnable: true\n      deviceshare.SchedulePolicy: binpack\n  - name: predicates\n  - name: proportion\n  - name: nodeorder\n  - name: binpack\n"
+}

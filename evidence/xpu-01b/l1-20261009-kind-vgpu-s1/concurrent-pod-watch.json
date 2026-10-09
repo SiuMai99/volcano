@@ -1,0 +1,162 @@
+[
+  {
+    "event": "ADDED",
+    "resourceVersion": "1724",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": null,
+    "devicesToAllocate": null,
+    "bindPhase": null
+  },
+  {
+    "event": "ADDED",
+    "resourceVersion": "1725",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": null,
+    "devicesToAllocate": null,
+    "bindPhase": null
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1728",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": null,
+    "devicesToAllocate": null,
+    "bindPhase": null
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1729",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": null,
+    "devicesToAllocate": null,
+    "bindPhase": null
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1734",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1735",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1738",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1740",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1743",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1744",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1745",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1746",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "allocating"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1747",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1748",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Pending",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1755",
+    "name": "concurrent-b",
+    "uid": "84a4e7e1-80b4-4b31-b193-ed35b6b8e44b",
+    "phase": "Running",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  },
+  {
+    "event": "MODIFIED",
+    "resourceVersion": "1756",
+    "name": "concurrent-a",
+    "uid": "2e2c14e7-bdb4-4421-bc84-9ac5ccb30c45",
+    "phase": "Running",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  }
+]

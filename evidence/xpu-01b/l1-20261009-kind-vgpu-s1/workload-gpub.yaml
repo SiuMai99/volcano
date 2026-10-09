@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: specific-h100-gpu1
+  namespace: xpu01b-probe
+  labels:
+    volcano-hami-vgpu/scenario: exact-uuid
+  annotations:
+    volcano.sh/vgpu-mode: hami-core
+    volcano.sh/vgpu-use-gpuuuid: GPU-01000100-0000-0000-0000-000000000001
+spec:
+  schedulerName: volcano
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: docker.io/library/busybox:1.36.1
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c"]
+    env:
+    - name: CUDA_DISABLE_CONTROL
+      value: "true"
+    args:
+    - echo "container started"; sleep 3600
+    resources:
+      limits:
+        volcano.sh/vgpu-number: "1"
+        # With gpuMemoryFactor=32, one unit represents 32 MiB in this mock.
+        volcano.sh/vgpu-memory: "1"
+        volcano.sh/vgpu-cores: "100"

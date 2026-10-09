@@ -1,0 +1,9 @@
+{
+  "name": "xpu01b-lock-1009-worker",
+  "uid": "e20fa95a-d64e-437b-b44e-3aeb7db8fdcc",
+  "kubeletVersion": "v1.33.12",
+  "arch": "arm64",
+  "allocatableVGPU": "2",
+  "registeredGPUs": "GPU-01000100-0000-0000-0000-000000000000,1,2560,NVIDIA-NVIDIA H100 80GB HBM3,true,hami-core:GPU-01000100-0000-0000-0000-000000000001,1,2560,NVIDIA-NVIDIA H100 80GB HBM3,true,hami-core:",
+  "finalLock": null
+}

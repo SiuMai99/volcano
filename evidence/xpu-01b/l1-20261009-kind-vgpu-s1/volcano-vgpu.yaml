@@ -1,0 +1,26 @@
+basic:
+  image_pull_policy: IfNotPresent
+  image_tag_version: v1.15.2
+  scheduler_image_name: volcano-vgpu-uuid/vc-scheduler
+  scheduler_image_tag_version: dev
+custom:
+  scheduler_config_override: |
+    actions: "enqueue, allocate, reclaim, preempt, backfill"
+    tiers:
+    - plugins:
+      - name: priority
+      - name: gang
+        enablePreemptable: true
+      - name: conformance
+    - plugins:
+      - name: overcommit
+      - name: drf
+        enablePreemptable: true
+      - name: deviceshare
+        arguments:
+          deviceshare.VGPUEnable: true
+          deviceshare.SchedulePolicy: binpack
+      - name: predicates
+      - name: proportion
+      - name: nodeorder
+      - name: binpack

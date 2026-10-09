@@ -1,0 +1,19 @@
+{
+  "namespace": "xpu01b-probe",
+  "name": "specific-h100-gpu1",
+  "uid": "7cdc40a4-0afb-4230-b0f4-2a8230472356",
+  "creationTimestamp": "2026-10-09T09:22:23Z",
+  "node": "xpu01b-probe-1009-worker",
+  "phase": "Running",
+  "annotations": {
+    "allowlist": "GPU-01000100-0000-0000-0000-000000000001",
+    "vgpuIDsNew": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+    "devicesToAllocate": "",
+    "bindPhase": "success"
+  },
+  "limits": {
+    "volcano.sh/vgpu-cores": "100",
+    "volcano.sh/vgpu-memory": "1",
+    "volcano.sh/vgpu-number": "1"
+  }
+}

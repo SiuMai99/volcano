@@ -1,0 +1,13 @@
+[
+  {
+    "name": "nvml-h100-nvml-mock-nxjlz",
+    "node": "xpu01b-lock-1009-worker",
+    "containers": [
+      {
+        "name": "node-agent",
+        "image": "ghcr.io/nvidia/nvml-mock:latest",
+        "imageID": "sha256:79aac489ca197be67499754a1f086d0dcab15f016d4a5af8bab1ad4145348098"
+      }
+    ]
+  }
+]

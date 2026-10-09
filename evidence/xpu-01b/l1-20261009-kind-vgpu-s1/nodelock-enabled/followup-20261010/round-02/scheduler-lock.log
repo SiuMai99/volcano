@@ -1,0 +1,4 @@
+I1009 17:58:46.835584       1 nodelock.go:107] "Node lock set" node="xpu01b-lock-1009-worker"
+E1009 17:58:46.837377       1 predicates.go:245] AllocateToPod failed node xpu01b-lock-1009-worker locked for concurrent-a hamivgpu lockname node xpu01b-lock-1009-worker has been locked within 5 minutes
+E1009 17:58:46.837390       1 statement.go:304] Failed to exec allocate callback functions for task <xpu01b-probe/concurrent-a> to node <xpu01b-lock-1009-worker> when allocating in Session <c443a91f-b334-4452-9a77-f6101137ddf2>: node xpu01b-lock-1009-worker locked for concurrent-a hamivgpu lockname node xpu01b-lock-1009-worker has been locked within 5 minutes
+I1009 17:58:47.886293       1 nodelock.go:107] "Node lock set" node="xpu01b-lock-1009-worker"

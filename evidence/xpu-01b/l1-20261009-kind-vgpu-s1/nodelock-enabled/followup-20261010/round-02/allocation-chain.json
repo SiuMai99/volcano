@@ -1,0 +1,96 @@
+{
+  "submitMode": "same-manifest-A-then-B",
+  "submitStartUTC": "2026-10-09T17:58:46Z",
+  "waitReadyExit": 0,
+  "pods": [
+    {
+      "name": "concurrent-a",
+      "podUID": "1a5e3a97-9f03-4e55-8c39-62a218209d96",
+      "phase": "Running",
+      "creationTimestamp": "2026-10-09T17:58:46Z",
+      "allowlist": "GPU-01000100-0000-0000-0000-000000000000",
+      "deviceshareAssignment": "GPU-01000100-0000-0000-0000-000000000000,NVIDIA,1,100:",
+      "bindPhase": "success",
+      "containerVisibleUUID": "GPU-01000100-0000-0000-0000-000000000000",
+      "podResourcesDeviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000001-0"
+      ],
+      "checkpoint": {
+        "podUID": "1a5e3a97-9f03-4e55-8c39-62a218209d96",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001-0"
+        ],
+        "responseMountPodUIDs": [
+          "1a5e3a97-9f03-4e55-8c39-62a218209d96"
+        ],
+        "responseInjectedUUIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000"
+        ]
+      }
+    },
+    {
+      "name": "concurrent-b",
+      "podUID": "030926dc-5097-444e-a5ef-ee9efb0390e4",
+      "phase": "Running",
+      "creationTimestamp": "2026-10-09T17:58:46Z",
+      "allowlist": "GPU-01000100-0000-0000-0000-000000000001",
+      "deviceshareAssignment": "GPU-01000100-0000-0000-0000-000000000001,NVIDIA,1,100:",
+      "bindPhase": "success",
+      "containerVisibleUUID": "GPU-01000100-0000-0000-0000-000000000001",
+      "podResourcesDeviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000000-0"
+      ],
+      "checkpoint": {
+        "podUID": "030926dc-5097-444e-a5ef-ee9efb0390e4",
+        "container": "probe",
+        "deviceIDs": [
+          "GPU-01000100-0000-0000-0000-000000000000-0"
+        ],
+        "responseMountPodUIDs": [
+          "030926dc-5097-444e-a5ef-ee9efb0390e4"
+        ],
+        "responseInjectedUUIDs": [
+          "GPU-01000100-0000-0000-0000-000000000001"
+        ]
+      }
+    }
+  ],
+  "preCheckpointVGPU": [
+    {
+      "podUID": "eca20e73-a206-45ba-a9b9-c4fe39473fb8",
+      "container": "probe",
+      "deviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000000-0"
+      ]
+    }
+  ],
+  "afterAllocationCheckpointVGPU": [
+    {
+      "podUID": "030926dc-5097-444e-a5ef-ee9efb0390e4",
+      "container": "probe",
+      "deviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000000-0"
+      ],
+      "responseMountPodUIDs": [
+        "030926dc-5097-444e-a5ef-ee9efb0390e4"
+      ],
+      "responseInjectedUUIDs": [
+        "GPU-01000100-0000-0000-0000-000000000001"
+      ]
+    },
+    {
+      "podUID": "1a5e3a97-9f03-4e55-8c39-62a218209d96",
+      "container": "probe",
+      "deviceIDs": [
+        "GPU-01000100-0000-0000-0000-000000000001-0"
+      ],
+      "responseMountPodUIDs": [
+        "1a5e3a97-9f03-4e55-8c39-62a218209d96"
+      ],
+      "responseInjectedUUIDs": [
+        "GPU-01000100-0000-0000-0000-000000000000"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+gpu:
+  profile: h100
+  count: 2
+  dynamicMetrics:
+    enabled: false
+  failureInjection:
+    enabled: false
+image:
+  repository: ghcr.io/nvidia/nvml-mock
+  tag: latest
+  pullPolicy: IfNotPresent
+nodeSelector:
+  nvml-mock/profile: h100
+topology:
+  enabled: true
+  domains:
+    - name: fabric-a
+      uuid: "00000000-0000-0000-0000-000000000001"
+      cliques:
+        - id: 0
+          nodes:
+            - xpu01b-lock-1009-worker

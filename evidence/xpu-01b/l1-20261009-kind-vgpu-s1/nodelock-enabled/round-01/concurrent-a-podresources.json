@@ -1,0 +1,9 @@
+{
+  "podName": "concurrent-a",
+  "namespace": "xpu01b-probe",
+  "containerName": "probe",
+  "resourceName": "volcano.sh/vgpu-number",
+  "deviceIDs": [
+    "GPU-01000100-0000-0000-0000-000000000000-0"
+  ]
+}

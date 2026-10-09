@@ -1,0 +1,1 @@
+[{"name":"nvml-h100","namespace":"nvml-mock-system","revision":"2","updated":"2026-10-09 17:20:53.288231 +0800 CST","status":"deployed","chart":"nvml-mock-0.3.0","app_version":"550.163.01"},{"name":"volcano","namespace":"volcano-system","revision":"1","updated":"2026-10-09 17:19:03.003456 +0800 CST","status":"deployed","chart":"volcano-1.15.2","app_version":"1.15.2"}]

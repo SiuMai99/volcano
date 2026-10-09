@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: volcano-vgpu-device-config
+  namespace: kube-system
+data:
+  device-config.yaml: |-
+    nvidia:
+      resourceCountName: volcano.sh/vgpu-number
+      resourceMemoryName: volcano.sh/vgpu-memory
+      resourceMemoryPercentageName: volcano.sh/vgpu-memory-percentage
+      resourceCoreName: volcano.sh/vgpu-cores
+      resourcePriorityName: volcano.sh/vgpu-priority
+      overwriteEnv: false
+      defaultMemory: 0
+      defaultCores: 0
+      defaultGPUNum: 1
+      deviceSplitCount: 1
+      deviceMemoryScaling: 1
+      deviceCoreScaling: 1
+      # Each allocatable vGPU-memory unit represents 32 MiB.  A factor larger
+      # than 1 keeps the kubelet device-plugin list below its entry limit.
+      gpuMemoryFactor: 32
+      knownMigGeometries: []
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: volcano-vgpu-node-config
+  namespace: kube-system
+data:
+  config.json: |
+    {
+      "nodeconfig": [
+        {
+          "name": "xpu01b-probe-1009-worker",
+          "operatingmode": "hami-core",
+          "devicememoryscaling": 1,
+          "devicecorescaling": 1,
+          "devicesplitcount": 1,
+          "migstrategy": "none",
+          "filterdevices": {"uuid": [], "index": []}
+        },
+        {
+          "name": "xpu01b-probe-1009-worker2",
+          "operatingmode": "hami-core",
+          "devicememoryscaling": 1,
+          "devicecorescaling": 1,
+          "devicesplitcount": 1,
+          "migstrategy": "none",
+          "filterdevices": {"uuid": [], "index": []}
+        },
+        {
+          "name": "xpu01b-probe-1009-worker3",
+          "operatingmode": "hami-core",
+          "devicememoryscaling": 1,
+          "devicecorescaling": 1,
+          "devicesplitcount": 1,
+          "migstrategy": "none",
+          "filterdevices": {"uuid": [], "index": []}
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volcano-device-plugin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: volcano-device-plugin
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "update", "patch", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: volcano-device-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: volcano-device-plugin
+subjects:
+- kind: ServiceAccount
+  name: volcano-device-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: volcano-device-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/component: volcano-vgpu-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: volcano-vgpu-device-plugin
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: volcano-vgpu-device-plugin
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+      - operator: Exists
+      priorityClassName: system-node-critical
+      serviceAccountName: volcano-device-plugin
+      initContainers:
+      - name: copy-vgpu-lib
+        image: docker.io/projecthami/volcano-vgpu-device-plugin:v1.12.0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c", "cp -f /k8s-vgpu/lib/nvidia/* /usr/local/vgpu/"]
+        volumeMounts:
+        - name: lib
+          mountPath: /usr/local/vgpu
+      containers:
+      - name: volcano-device-plugin
+        image: docker.io/projecthami/volcano-vgpu-device-plugin:v1.12.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - --gpu-memory-factor=32
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: HOOK_PATH
+          value: /usr/local/vgpu
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_MIG_MONITOR_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: utility
+        - name: NVIDIA_DRIVER_ROOT
+          value: /var/lib/nvml-mock/driver
+        - name: CONTAINER_DRIVER_ROOT
+          value: /var/lib/nvml-mock/driver
+        - name: NVIDIA_DEV_ROOT
+          value: /var/lib/nvml-mock/driver
+        - name: LD_LIBRARY_PATH
+          value: /var/lib/nvml-mock/driver/usr/lib64:/var/lib/nvml-mock/driver/usr/local/lib
+        - name: DEVICE_DISCOVERY_STRATEGY
+          value: nvml
+        - name: DP_DISABLE_HEALTHCHECKS
+          value: all
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: nodeconfig
+          mountPath: /config
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: lib
+          mountPath: /usr/local/vgpu
+        - name: hosttmp
+          mountPath: /tmp
+        - name: mock-root
+          mountPath: /var/lib/nvml-mock/driver
+          readOnly: true
+      volumes:
+      - name: nodeconfig
+        configMap:
+          name: volcano-vgpu-node-config
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+          type: Directory
+      - name: lib
+        hostPath:
+          path: /usr/local/vgpu
+          type: DirectoryOrCreate
+      - name: hosttmp
+        hostPath:
+          path: /tmp
+          type: DirectoryOrCreate
+      - name: mock-root
+        hostPath:
+          path: /var/lib/nvml-mock/driver
+          type: Directory

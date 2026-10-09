@@ -1,0 +1,13 @@
+[
+  {
+    "name": "volcano-device-plugin-2h5wv",
+    "node": "xpu01b-lock-1009-worker",
+    "containers": [
+      {
+        "name": "volcano-device-plugin",
+        "image": "docker.io/projecthami/volcano-vgpu-device-plugin:v1.12.0",
+        "imageID": "sha256:1b81679a3ef3c8c526580929b6b0a04b40d218ed24290f16bdb46295099c3858"
+      }
+    ]
+  }
+]
