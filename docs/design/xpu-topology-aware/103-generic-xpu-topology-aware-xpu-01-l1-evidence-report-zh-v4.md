@@ -1,8 +1,8 @@
 # Volcano 通用 xPU 拓扑感知调度 V4：XPU-01 L1 分层证据报告
 
 > M3 对齐说明（2026-09-22）：本报告保存的单 assignment payload 是 XPU-01 探针历史证据，不是 M3 production serialization。
-> M3 使用包含 ContainerRef 的 Pod 级 `assignments[]` canonical envelope，且必须另行证明 API Pod 持久化、selected DeviceKey 与 kubelet
-> DeviceID 对账；见 [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
+> M3 使用包含 ContainerRef 的 Pod 级 `assignments[]` canonical envelope，且必须另行证明 API Pod 持久化和执行对账；
+> 对 XPU-01B vGPU profile，物理 UUID 身份与 kubelet 虚拟槽位数量分账，见 [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
 > 2026-09-23 的 PR9 代码已迁移当前 harness，但没有重写本报告引用的 2026-09-17 原始证据；历史结果继续按原格式解释。
 
 > 关联合同：[XPU-00 合同冻结记录](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
@@ -14,6 +14,10 @@
 > 报告修订：2026-09-20；本次修订增加现有 Volcano vGPU/HAMi Adapter 证据边界和单槽位验证计划。
 >
 > 结论：**stock NVIDIA Device Plugin 的 exact-ID 仍未满足；现有 Volcano vGPU Adapter 可以作为独立 L1 exact UUID 轨道；`deviceSplitCount=1` 的单槽位 profile 尚待按新配置运行。**
+>
+> 后续决策（2026-10-01）：XPU-01B 首个执行后端选用
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。以下 2026-09-17/20 的
+> 测试结果与 `NotRun` 状态保持原样；新决策不自动使 D4 或 M3 exact-ready。
 
 ## 1. 结论摘要
 
@@ -208,18 +212,18 @@ PodResources 客户端也已在隔离的临时 Go module 中使用本机缓存�
 
 ## 5. 对后续工作的影响
 
-当前形成两条后续路径：
+本报告原先提出两条后续路径；2026-10-01 决策选第 1 条作为 XPU-01B 的首个执行后端：
 
-1. **当前可用的 Volcano vGPU Adapter 路径**：按 `volcano-vgpu-s1` profile 重新运行单槽位证据，保留 vGPU 私有 annotation、restore 流程和容器 UUID 断言；该路径不修改原始 Alpha 的 vGPU API 范围。
-2. **后续 native NVIDIA Device Plugin 路径**：另立 `XPU-01B` exact allocation bridge 计划，不把工作简化成只修改 `Allocate()`。
+1. **XPU-01B Volcano vGPU 执行后端**：按 `volcano-vgpu-s1` profile 重新运行单槽位证据，并补 scheduler-owned assignment 到 deviceshare/插件、API Pod 持久化、kubelet 虚拟槽位数量账和 Pod/Container 关联；原 vGPU 私有 annotation、restore 流程和容器 UUID 断言仍需保留。
+2. **stock NVIDIA Device Plugin 后续研究**：其 exact allocation 接缝不作为 XPU-01B 首个实现前置，也不在本报告中改写 stock 负例。
 
-native bridge 仍需明确：
+XPU-01B vGPU bridge 仍需明确：
 
 1. scheduler 如何把 selected `DeviceKey` 交给 Provider/适配层；
 2. Provider 如何只确认/消费该 key，而不是重新选卡；
 3. 哪个组件负责把 assignment 写入 Pod，并保证 Bind 后可恢复；
 4. Provider 无法确认时，hard workload 如何保持 `Pending` 并返回 `XPUAssignmentNotEnforceable`；
-5. 如何用 PodUID、NodeUID、ContainerName、ResourceName 和实际 DeviceIDs 完成端到端对账。
+5. 如何用 PodUID、NodeUID、ContainerName、ResourceName 将物理 UUID 注入链与 kubelet 虚拟槽位数量/生命周期分别对账。
 
 当前 bridge 仍是可执行合同 harness，不是 production Provider、scheduler plugin 或 Pod mutation 实现。在它接入真实 API/组件前，不应把 native NVIDIA Device Plugin 的整数资源分配结果解释成 exact-ID 支持，也不应开始声明真实 NVIDIA runtime 或 Fabric 已验收。
 
@@ -228,6 +232,6 @@ native bridge 仍需明确：
 ```text
 Volcano vGPU/HAMi Adapter UUID realization = 当前可复用的 L1 后端证据
 Volcano vGPU single-slot (deviceSplitCount=1) = 计划验证配置，当前 NotRun
-stock NVIDIA Device Plugin exact-ID       = Blocked，后续 XPU-01B
+stock NVIDIA Device Plugin exact-ID       = Blocked，独立后续研究
 Alpha workload GPU virtualization support = 未引入
 ```

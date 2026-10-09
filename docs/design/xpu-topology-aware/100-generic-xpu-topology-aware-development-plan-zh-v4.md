@@ -13,6 +13,10 @@
 >
 > 范围修订（2026-09-20）：原始 Alpha 仍不把 GPU 虚拟化请求形状纳入产品能力；为提前验证 exact UUID 后端，XPU-01 增加一个复用现有 Volcano vGPU/HAMi Adapter 的 L1 证据轨道。该轨道是验证配置，不改变 Alpha 的 vGPU/MIG 支持范围，也不替代后续原生 NVIDIA Device Plugin exact-ID 方案。
 >
+> XPU-01B 决策（2026-10-01）：首个 M3 执行后端改为现有 Volcano deviceshare + `volcano-vgpu-device-plugin` 的
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。2026-09-20 的 XPU-01 分轨文字是历史探针范围；
+> XPU-01B 不再以 fork stock NVIDIA Device Plugin 为前置。单槽位 profile 的新合同和运行证据仍待完成。
+>
 > XPU-00 已启动；合同冻结草案与 fixture 规范见
 > [101-generic-xpu-topology-aware-contract-review-zh-v4.md](./101-generic-xpu-topology-aware-contract-review-zh-v4.md)。
 
@@ -50,11 +54,11 @@ V4 中的“PR 1”和“PR 3”各自包含多个跨组件改动，本计划将
 exact Alpha 共用的 multi-container/init/restartable-init device 请求形状、基于已绑定 Pod 的稳定跨 wave anchor、单 active leader，以及
 一个 Provider 能否消费/确认 scheduler-selected DeviceKey 的探针。
 
-延期：DRA claim/ResourceSlice、MIG/vGPU/共享几何作为 Alpha workload API、topology-aware victim selection、自动推导 Fabric、通信 ring
+延期：DRA claim/ResourceSlice、MIG/任意 vGPU split/共享几何作为 Alpha workload API、topology-aware victim selection、自动推导 Fabric、通信 ring
 优化、外部设备生命周期、多 Pod Bind 原子性、workload 同时启动屏障。
-首个 Provider 的厂商目标固定为 NVIDIA；XPU-01 主轨道仍使用 `nvml-mock + NVIDIA Device Plugin` 接入 `nvidia.com/gpu`，并保留 stock
-Device Plugin 的 exact-ID 缺口结论。新增的 vGPU 轨道只复用现有 `volcano-vgpu-device-plugin` 作为 L1 Adapter 证据，使用
-`deviceSplitCount=1` 的最小单槽位验证配置，不表示首期支持 vGPU 请求形状。HAMi 不是底层设备厂商。
+首个 Provider 的厂商目标固定为 NVIDIA；XPU-01 历史主轨道使用 `nvml-mock + NVIDIA Device Plugin` 接入 `nvidia.com/gpu`，其
+stock exact-ID 缺口结论保留。XPU-01B 首个执行 profile 改用 `volcano.sh/vgpu-number`、`deviceSplitCount=1` 和现有 vGPU 插件；
+只承诺经证据验证的单槽位、独占物理 UUID 执行，不表示任意 vGPU 请求形状已受支持。HAMi 不是底层设备厂商。
 
 ## 2. 源码基线与实际改动面
 
@@ -83,7 +87,7 @@ M0 不是重写设计。输出短决策记录、接口草案与反例用例，�
 | --- | --- | --- |
 | D1：catalog 权威载体 | 固定 Alpha class 定义，使用 scheduler-side 静态配置/安装输入；不冻结跨组件共享读取协议，不实现运行期间更新 | XPU-03、05 |
 | D2：Pod-derived anchor 与 assignment | 复用已绑定 Pod 的 `spec.nodeName` 和 scheduler-owned `volcano.sh/xpu-assignment` 重建 anchor；直接扫描成员 Pod，不引入独立持久化记录或摘要状态 | XPU-11、14 |
-| D4：首个 Provider | 保持 generic contract：scheduler-selected DeviceKey 能被 Provider/Device Plugin 消费或确认，并能写入/保留 Pod assignment annotation；XPU-01 同时报告 stock 路径缺口和现有 Volcano vGPU Adapter 的 exact UUID 证据，两者不合并 | XPU-01 |
+| D4：首个 Provider | scheduler-selected 物理 DeviceKey 由 `volcano-vgpu-s1` deviceshare/插件消费或确认，并写入/保留 API Pod assignment；kubelet 虚拟槽位 ID 单独做数量账。XPU-01 的 stock/vGPU 历史证据仍分列 | XPU-01B/M3 |
 | D5：API 与 schema | 冻结 class 名语法、默认值、selector 冲突判定和 strict JSON；大小上限与 legacy tombstone 仅在实现/实际 served 版本需要时确定 | XPU-03、04 |
 | D6：authoring 与 anchor activity | 已绑定成员存在时禁止 topology policy semantic mutation；复用 PodGroup 的现有 resourceVersion/generation 更新冲突，不新增 ActivityFence；单 leader 读取一致缓存 | XPU-04、11 |
 | D7：激活与 action 兼容 | 冻结 gate/plugin/catalog fail-closed；只对能产生 assignment/Bind 的 allocate/backfill/nomination 做 guard，其他 action 做不变性审计 | XPU-02、13、14 |
@@ -168,7 +172,7 @@ flowchart TB
 | --- | --- | --- | --- | --- |
 | XPU-00 | [冻结 API、Pod-derived anchor、assignment 与验收合同](./101-generic-xpu-topology-aware-contract-review-zh-v4.md) | 无 | A/S/R | 4～6 |
 | XPU-01 | Provider identity/selected DeviceKey 探针与硬件验收方案；包含 stock negative case 和现有 vGPU Adapter L1 evidence | 00 的初版合同；结果反哺 D4 | R/Q | 3～5 |
-| XPU-01B | 后续 native NVIDIA exact allocation bridge 设计：scheduler-owned assignment、Provider 校验、kubelet `DevicesIds` 对账和 runtime reconciliation | XPU-01 stock gap；不属于当前 vGPU 验证实施 | S/R | 后续单独估算 |
+| XPU-01B | [`volcano-vgpu-s1` 执行 bridge](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)：scheduler-owned 物理 UUID assignment、winner→deviceshare 精确交接、vGPU 插件注入、kubelet 虚拟槽位数量账与 runtime reconciliation | XPU-01 vGPU 旁证、M3 winner plan；单槽位和并发关联仍须新证据 | S/R | 待 L1 探针后单独估算 |
 | XPU-02 | Feature/plugin activation guard、process manager 骨架 | 00/D7 | S | 4～6 |
 | XPU-03 | PodGroup Public API、scheduler-side catalog、canonical types 与生成链 | 00/D1/D5 | A/S | 6～9 |
 | XPU-04 | direct PodGroup canonicalization、mutation、Condition 聚合 | 02、03；D6 | A | 6～9 |
@@ -307,6 +311,7 @@ Alpha 只验证 Pod-derived anchor 的失效与 Pending，不管理外部设备 
 > 实施状态：待开发。以下总体工作包已细化为
 > [M3 Pod-derived Topology Alpha 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)；在 XPU-01B
 > 证明 selected DeviceKey 可被执行/确认、assignment 可持久化并恢复前，不得把 `AssignmentContractReady` 置为生产可用。
+> 首个执行 profile 与代码修改顺序见 [XPU-01B vGPU 计划](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
 
 ### XPU-08：allocate 内部 side-effect-free Group planner
 

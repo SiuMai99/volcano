@@ -9,6 +9,10 @@
 > 本文冻结首个 Alpha 的实现输入，不表示上游已经接受，也不表示功能已经实现。
 > 原始源码核对日期：2026-09-16；原始源码基线：`7604cc7d3`；当时文档分支 HEAD 仅增加设计/计划文档。
 > 当前实现与证据状态以上述 2026-09-22 更新和 M3 开发计划为准。
+>
+> D4 执行 profile 修订（2026-10-01）：XPU-01B 首个后端采用
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。下文 XPU-01 stock/vGPU 分轨
+> 仍记载历史探针；D4 新的物理 UUID 与 kubelet 虚拟槽位分账合同适用于 M3，当前仍 `ProbePending`。
 
 ## 1. XPU-00 的完成边界
 
@@ -40,7 +44,7 @@ Group 持久化记录。
 | --- | --- | --- | --- | --- |
 | D1 catalog 权威载体 | Alpha 使用随 scheduler/plugin 交付的固定 catalog；其他组件只校验 policy 形状，scheduler 对未知 class fail closed；运行期间不更新 | `FrozenForAlpha` | S | XPU-03/05 |
 | D2 anchor/assignment 载体 | Alpha 从已绑定 Pod 的 `spec.nodeName` 与受控 XPU assignment annotation 重建 anchor；直接扫描成员 Pod，不引入独立持久化记录或摘要状态 | `FrozenForAlpha` | S | XPU-11 |
-| D4 首个 Provider/identity | Alpha 要求 Provider/Device Plugin 能消费或确认 Pod assignment annotation | `ProbePending` | R | XPU-01 |
+| D4 首个 Provider/identity | 首个 `volcano-vgpu-s1` profile 消费 scheduler-selected 物理 UUID；API Pod assignment 为恢复事实，kubelet 虚拟槽位单独计数对账 | `ProbePending` | S/R | XPU-01B/M3 |
 | D5 API/schema | V4 `DeviceTopologySpec`；class 为 DNS-1123 label；严格 JSON；只保留实现所需的最小校验；若曾有 served V3 才保留 reject-only 兼容字段 | `FrozenForAlpha` | A | XPU-03/04 |
 | D6 authoring/activity | anchor 建立后禁止 topology policy semantic mutation；复用 PodGroup spec 的现有 resourceVersion/generation 校验，不新增 `ActivityFence` | `FrozenForAlpha` | A/S | XPU-04/11 |
 | D7 激活/action | gate/plugin 组合和 scheduler 本地 catalog 必须有效；能产生 assignment/Bind 的路径有 hard final guard，其他 action 只做旁路审计 | `FrozenForAlpha` | S | XPU-02/13/14 |
@@ -98,7 +102,7 @@ canonical envelope，而不承担已发布数据迁移；`tools/xpu-01` 的早�
   "assignments": [
     {
       "container": {"kind": "regular", "name": "worker"},
-      "resourceName": "nvidia.com/gpu",
+      "resourceName": "volcano.sh/vgpu-number",
       "provider": "nvidia-nvml-v1",
       "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
     }
@@ -145,22 +149,23 @@ scheduler leader 负责该调度路径，不设计两个 scheduler 同时更新�
   facts 校验时，才可作为 Alpha 的恢复事实；
 - metrics 和 log 都只能作为可重建的诊断信息；
 - Alpha 不负责外部设备 reservation、release 或跨系统故障对账；
-- 共享/分数设备、MIG/vGPU 和 DRA Claim 的 Alpha assignment 语义延期，不通过 annotation 猜测；多 regular/init/restartable-init
-  container 允许存在，但每条目标 resource 仍只有一个消费者。XPU-01 可以复用已有 Volcano vGPU Adapter 做独立 L1 exact UUID
-  证据，但不因此冻结或承诺 Alpha 的 vGPU workload API。
+- 共享/分数设备、MIG、任意 vGPU split 和 DRA Claim 的 Alpha assignment 语义延期，不通过 annotation 猜测；
+  `volcano-vgpu-s1` 是单槽位执行 profile，只有在物理整卡独占和身份链通过证据后才可放行。多 regular/init/restartable-init
+  container 允许存在，但每条目标 resource 仍只有一个消费者；插件尚需实现并验证这些 ContainerRef 的确定性关联。
 
 如果未来需要在 Pod 消失后恢复外部设备状态或增加多 Pod 提交屏障，应另立需求和合同；它们不属于 Alpha，也不作为本合同的实现前置。
 
 ## 5. D4：首个 Provider identity 与 XPU-01 输入
 
-首个 Provider 的**设备厂商和资源目标冻结为 NVIDIA**；首版 trusted identity contract 建议固定为：
+首个 Provider 的**设备厂商冻结为 NVIDIA**。XPU-01 stock 探针的历史 identity 是 `nvidia.com/gpu`；M3 首个执行
+profile 的 trusted identity 建议固定为：
 
 ```text
 Vendor:        NVIDIA
 ProviderID:    nvidia-nvml-v1
-Namespace:     nvidia.com
-ResourceName:  nvidia.com/gpu
-DeviceID:      NVIDIA GPU UUID
+Namespace:     nvidia.com（物理设备身份命名空间，不等于扩展资源名前缀）
+ResourceName:  volcano.sh/vgpu-number
+DeviceID:      NVIDIA 物理 GPU UUID（不是 kubelet 虚拟槽位 ID）
 Discovery API: NVML（测试环境可由 nvml-mock 提供）
 ```
 
@@ -175,7 +180,12 @@ Discovery API: NVML（测试环境可由 nvml-mock 提供）
 | 真实 NVIDIA 节点 | 在 M4 核验实际容器可见 UUID 等于 plan，并补真实重启/释放证据 | 未实际覆盖的 Fabric、MIG/vGPU 能力 |
 
 HAMi 可以作为 NVIDIA 分配实现或 companion 方案的参考，但它不是底层设备厂商。不能用 HAMi 替换 `Vendor=NVIDIA`，也不能把
-`ProviderID`、`nvidia.com/gpu` 和 GPU UUID 三层身份混成一个字段。
+`ProviderID`、`volcano.sh/vgpu-number`、物理 GPU UUID 和 kubelet 虚拟槽位 ID 混成一个字段。
+
+XPU-01B 的 D4 不要求 `DeviceKey` 与 kubelet `DevicesIds` 字面相等；在同一 Pod/Container/资源上，必须证明 selected 物理 UUID、
+API Pod assignment、deviceshare 占用和插件注入 UUID 一致，另由 kubelet `Allocate.DevicesIds`/PodResources 核对虚拟槽位数量与
+生命周期。数量相等不证明选中了指定物理卡。单槽位配置、独占资源池、Pod/Container 确定性关联、冲突时 fail closed 和 API Pod
+持久化均为 `AssignmentContractReady` 的必要条件，详见 [XPU-01B 计划](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
 
 XPU-01 使用独立 harness，不依赖尚未实现的 scheduler plugin，并按 stock、vGPU Adapter、真实 runtime 三条轨道输出：
 
@@ -414,4 +424,5 @@ XPU-00 可以在以下条件满足后从“实现基线草案”转为“已冻�
 
 以下不阻塞 XPU-00/XPU-01：multiple acceptable classes、真实 Fabric 发布、topology-aware victim selection、DRA、MIG/vGPU workload API
 和 workload start barrier。多 regular/init/restartable-init container 已纳入共同请求形状，但每条目标 resource 仍限制为一个消费者。
-现有 Volcano vGPU Adapter 的 L1 证据可以作为 D4 的旁证，但不能混入首个 Alpha 的 vGPU 能力声明。
+现有 Volcano vGPU Adapter 的 L1 证据是 D4 的历史旁证；XPU-01B 仍须补齐 scheduler-owned winner 到 deviceshare/插件、
+API Pod 持久化、虚拟槽位数量账和 Pod/Container 关联的新证据，不能把既有用户 allowlist 案例标记为 M3 exact-ready。

@@ -8,6 +8,11 @@
 > 状态：**PR9 开发中；L0/单元合同已落地，L1 exact profile 仍 Blocked**。记录日期：2026-09-23。
 > 本文记录代码、静态/Fake 验证和剩余门槛，不表示 production hard Bind、真实 API server 持久化、kubelet selected-ID
 > enforcement 或 runtime UUID 已完成。
+>
+> 后续合同修订（2026-10-01）：本文记录 PR9 当时的实现、测试与门槛；XPU-01B 首个执行后端已选
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。该 profile 的 kubelet
+> `DevicesIds` 是虚拟槽位，允许与注入的物理 UUID 不同；须分别证明物理身份链、Pod/Container 关联与虚拟槽位数量/生命周期账。
+> 本文历史测试输出、能力矩阵和 `NotAvailable` 结果不因该决策变为通过。
 
 ## 1. 本轮结论
 
@@ -177,8 +182,8 @@ exactReady                      = false
 - 无法把 Allocate 调用可靠关联到 assignment 中的 PodUID/ContainerRef；
 - API Pod 重读不到 assignment；
 - bridge 允许重选另一个 UUID；
-- kubelet accounting ID 与 runtime 注入 UUID 不同；
+- 对要求原生同 ID 的 profile，kubelet accounting ID 与 runtime 注入 UUID 不同；对 `volcano-vgpu-s1`，
+  只有虚拟槽位数量相等而无法证明同一 Pod/Container 的物理 UUID 注入、独占和生命周期对账；
 - 实现需要偷偷引入 DRA、kubelet fork、外部 reservation/ledger 或 vGPU/shared 请求形状。
 
 在以上 Stop gate 关闭前，PR9 不修改 `AssignmentContractReady` 的运行时来源，不接 production Bind，不开始 PR12/13 的 hard 放行。
-

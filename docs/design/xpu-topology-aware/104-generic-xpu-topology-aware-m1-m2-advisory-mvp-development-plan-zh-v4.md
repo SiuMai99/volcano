@@ -14,6 +14,9 @@
 > Advisory MVP 本地验收完成，不表示提交已经推送、合入上游，也不表示 hard topology、exact UUID 或 M3 已完成。
 >
 > 本文原始源码复核日期为 2026-09-20、HEAD `0a53d9eee990`；第 2 节保留实施前基线，供审查“计划要求与实际落点”差异。
+>
+> 后续 M3 决策（2026-10-01）：本文的 M1/M2 范围和验收结果不变；XPU-01B 首个执行后端改为
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。文中 native bridge 描述是当时的后续建议。
 
 ## 1. 本阶段结论
 
@@ -170,7 +173,7 @@ XPU-02 activation/lifecycle ───────────────┐
 XPU-03 API + catalog + canonical model ────┤                                                     ├─> XPU-07 Advisory MVP
                                            └─> XPU-04 admission/JobInfo/status ────────────────────┘
 
-XPU-01B native exact bridge：并行研究，不阻塞 M1/M2；它只决定后续 M3 hard 是否可放行。
+XPU-01B exact bridge：M1/M2 时作为并行研究，不阻塞 M1/M2；2026-10-01 已选择单槽位 Volcano vGPU 路径作为 M3 首个执行后端，完成证据前 hard 仍不可放行。
 ```
 
 可并行边界：
@@ -540,8 +543,8 @@ go test ./pkg/webhooks/admission/podgroups/... ./pkg/controllers/podgroup ./pkg/
 | Provider parse 位于 scheduler cache 主锁内 | M1 不放行；移出锁并增加调用计数/并发测试 |
 | soft 缺数据会删除候选 | M2 不放行；改为 0 preference 和诊断 reason |
 | score 输入顺序改变最终选择 | M2 不放行；补 stable sort/tie-break |
-| 需要修改 stock NVIDIA Device Plugin 才能执行 hard | 转入 XPU-01B；M1/M2 不扩 scope，hard 继续 Pending |
-| vGPU/HAMi 私有 annotation 被当成 generic assignment | 拒绝合入；它只能是独立 Adapter 证据 |
+| stock NVIDIA Device Plugin 无法执行选定 UUID | M1/M2 不扩 scope，hard 继续 Pending；后续 XPU-01B 首个后端使用单槽位 Volcano vGPU 路径 |
+| vGPU/HAMi 私有 annotation 被当成 generic assignment | 拒绝合入；M3 可复用其执行路径，但 API Pod 的 `xpu-assignment` 仍是恢复权威 |
 | 实现需要 transaction ledger/batch Bind/external owner | 停止并另立需求；不把独立能力塞入 M1/M2 |
 
 ## 12. 本阶段明确不做

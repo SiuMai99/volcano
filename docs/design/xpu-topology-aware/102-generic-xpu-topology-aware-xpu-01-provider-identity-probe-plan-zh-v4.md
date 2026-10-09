@@ -16,6 +16,9 @@
 > `pkg/scheduler/api/device_topology_assignment.go`；2026-09-17 保存的历史证据仍是旧单 assignment 格式，不能因此升级为
 > production persistence 或 exact-ID 证据。放行门见
 > [M3 开发计划](./106-generic-xpu-topology-aware-m3-pod-derived-alpha-development-plan-zh-v4.md)。
+>
+> 后续决策（2026-10-01）：本文的 XPU-01 分轨探针范围与历史结果不回写；XPU-01B 首个执行后端已选
+> [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)，不以 fork stock NVIDIA Device Plugin 为当前主线。
 
 ## 1. 目标与完成边界
 
@@ -291,7 +294,8 @@ Track A 只能证明 contract harness 和测试 double 的行为；它不能单�
 - 列出每个 case 的输入、环境、结果、reason、证据路径和复现入口；
 - 单独列出原生 Device Plugin 的协议缺口和是否需要 Provider/Adapter bridge；
 - 更新 D4 的证据链接：可以单独报告 `D4-vGPU Adapter evidence`，但 generic scheduler-owned assignment 和 native Device Plugin exact-ID 仍按各自结果处理；
-- 把原生 NVIDIA Device Plugin 的定制修改列为后续 `XPU-01B` bridge 计划，不在当前 vGPU 轨道中实现；
+- 当时把原生 NVIDIA Device Plugin 的定制修改列为后续 `XPU-01B` bridge 候选，不在 XPU-01 vGPU 探针中实现；
+  2026-10-01 已改由单槽位 Volcano vGPU 路径承担 XPU-01B 首个执行后端；
 - 明确哪些结果可以进入 Alpha 能力声明，哪些只能保留为 mock 或后续发布证据；
 - 提交 API/scheduler/framework/runtime reviewer 评审，不在报告中自行宣布 XPU-00 已冻结。
 
@@ -458,7 +462,7 @@ XPU-01 完成并不自动等于 XPU-00 完成。它只能补齐 D4 的 backend e
 
 ```text
 D4-vGPU Adapter evidence       = existing Volcano vGPU path, L1 bounded result
-D4-stock/native exact-ID       = remains blocked/pending until XPU-01B
+D4-stock/native exact-ID       = remains blocked/pending; native follow-up is separate from the selected XPU-01B vGPU backend
 Alpha workload vGPU support    = not introduced by this probe
 ```
 
@@ -489,4 +493,5 @@ XPU-00 仍需满足合同评审出口：
 本文是 XPU-01 的实施计划，不是运行结果。实施完成后应把真实 evidence path、运行日期、环境版本、case 结果和 reviewer 结论回填到独立报告或后续评审记录中；不要直接把本计划中的预期结果改写成已通过事实。
 
 XPU-00 的 assignment、Pod-derived recovery、现有逐 Pod Bind 和 `XPUAssignmentNotEnforceable` 语义以合同文档为准；XPU-01 不能扩大这些合同的能力范围。
-`volcano-vgpu-device-plugin` 只作为 XPU-01 的现有 Adapter 验证后端；原生 NVIDIA Device Plugin 的 exact allocation bridge 另由 XPU-01B 规划。
+本文 XPU-01 阶段仅把 `volcano-vgpu-device-plugin` 作为现有 Adapter 验证后端；后续 XPU-01B 已决定将其单槽位 profile
+作为首个 M3 执行后端。stock NVIDIA Device Plugin exact-ID 接缝保留为独立后续研究，不改写本文历史探针的通过/失败判定。

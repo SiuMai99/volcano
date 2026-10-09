@@ -10,6 +10,11 @@
 > 关联议题：[volcano-sh/volcano#5751](https://github.com/volcano-sh/volcano/issues/5751)
 >
 > 关联社区提案：[volcano-sh/volcano#5965](https://github.com/volcano-sh/volcano/pull/5965)
+>
+> 执行后端修订（2026-10-01）：M3/XPU-01B 首个 profile 选择现有 Volcano deviceshare +
+> `volcano-vgpu-device-plugin` 的 [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
+> 本文原始 `nvidia.com/gpu` 示例保留通用/历史语境；首个执行 profile 的资源名为 `volcano.sh/vgpu-number`，
+> 其 scheduler DeviceKey 是物理 UUID，kubelet DeviceID 是单独记账的虚拟槽位 ID。新合同尚未完成运行验证。
 
 ## 1. V4 结论与保证边界
 
@@ -41,7 +46,8 @@ direct PodGroup.spec.deviceTopology（Alpha canonical policy source）
   -> Group/Pod plan in the current Session
   -> Statement tentative Allocate
   -> select Node + canonical DeviceKeys
-  -> attach scheduler-owned xpu-assignment to each Pod BindContext
+  -> persist scheduler-owned xpu-assignment to each API Pod before Bind
+  -> selected physical UUID confirmed by deviceshare/vGPU execution bridge
   -> existing per-Pod PreBind/Bind
   -> next Session derives Group anchor from bound Pods
 ~~~
@@ -152,7 +158,7 @@ flowchart LR
 下列能力不进入首个 Pod-derived Topology Alpha：
 
 - DRA `claimName` Public API 和 ResourceSlice Provider；
-- MIG、vGPU、共享/分数设备的 exact allocation lifecycle；多 Container/Init Container 的请求形状和 assignment lifecycle 属于本 Alpha；
+- MIG、任意 vGPU split、共享/分数设备的 exact allocation lifecycle；`volcano-vgpu-s1` 单槽位执行后端和多 Container/Init Container 的请求形状与 assignment lifecycle 属于本 Alpha，但均须通过各自接缝证据；
 - topology-aware victim selection 和 device-level pipeline 持久化；
 - 自动推导 Fabric、NCCL ring、厂商 link-bandwidth 规划；
 
@@ -1355,14 +1361,15 @@ PodDerivedGroupAnchor(F1)         -> 当前 Session 从 Pod 重建的具体实�
 本节约束同时适用于 M2 Advisory compiler 和后续带有 `DeviceKey -> assignment -> runtime` handoff 的 Pod-derived exact Alpha。
 Pod 可以包含多个 regular container、普通 init container 和 restartable init container；但对每条
 `DeviceTopologyPolicy.resourceName`，在所有这些容器中只能有一个设备消费者。该容器必须提供正整数 `limit`，`request` 可以省略，
-若存在则必须与 `limit` 相等。DRA、MIG、vGPU、共享/分数设备仍不属于本 Alpha 请求形状。
+若存在则必须与 `limit` 相等。DRA、MIG、任意 vGPU split、共享/分数设备仍不属于本 Alpha 请求形状；
+首个 `volcano-vgpu-s1` profile 只接受单槽位、经独占验证的 `volcano.sh/vgpu-number` 整数请求。
 
 对每条 Alpha `DeviceTopologyPolicy.resourceName`，每个被该 policy 选中的 Pod 必须满足：
 
 - 目标资源只出现在一个 `spec.containers[]`、`spec.initContainers[]` 或 restartable init container；其他容器可以存在，但不得再次请求同一目标资源；
 - 该 Container 的 `limit` 为正整数 whole-device quantity；`request` 可以省略，若存在则必须与 `limit` 相等；
 - ephemeral container 不得请求该目标资源；
-- 不接受 DRA claim、MIG、vGPU、memory/core share 或厂商 fractional geometry；
+- 不接受 DRA claim、MIG、任意 split 的 vGPU、memory/core share 或厂商 fractional geometry；
 - `applyTo=Group` 的所有目标成员都必须满足同一可解释形状；
 - `applyTo=Pod` 时，只有 selector 命中的 Pod 进入该 policy，但命中后不得以“请求为零”静默跳过。
 
@@ -1406,7 +1413,7 @@ Alpha 中每个目标 resource 的 `Assignments` 恰有一项。一个 Pod 可�
   "assignments": [
     {
       "container": {"kind": "regular", "name": "worker"},
-      "resourceName": "nvidia.com/gpu",
+      "resourceName": "volcano.sh/vgpu-number",
       "provider": "nvidia-nvml-v1",
       "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
     }
@@ -1454,6 +1461,11 @@ Provider identity contract 必须与
 Plain Device Plugin 数量和 kubelet `GetPreferredAllocation` 不是 scheduler-selected assignment 确认接口。
 未经验证时它们只允许 `soft` advisory；不能让 hard workload 进入 Bind。Alpha 只要求 Provider 能确认选中的 DeviceKeys，
 并将 assignment 保留在已绑定 Pod 上。
+
+首个 `volcano-vgpu-s1` profile 的确认合同针对**物理 GPU UUID**：planner selected key、API Pod assignment、deviceshare 占用及
+vGPU 插件注入必须在同一 Pod/Container 上一致。kubelet `Allocate.DevicesIds` 与 PodResources 记录的是虚拟槽位 ID，只要求按
+Pod/Container/资源做数量与生命周期对账，不与物理 UUID 作字面相等比较。数量一致不能证明指定物理卡被注入；同卡独占、
+Pod/Container 确定性关联和 fail-closed 负例是 hard 放行门，详见 [XPU-01B 计划](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
 
 ## 8. Alpha recovery 边界
 
@@ -1709,7 +1721,8 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 2. HyperNode 仍只拥有 Node/网络层次；
 3. Job/SubJob readiness 不复制；
 4. normal resource fit 不被 xPU topology view 二次扣减；
-5. existing deviceshare/DRA 不与本文的 assignment identity 混用；
+5. `volcano-vgpu-s1` 复用 existing deviceshare 的物理卡占用，但其私有 annotation 只能作为执行侧证据；
+   scheduler-owned `xpu-assignment` 仍是跨 Session 恢复权威。DRA 不纳入首个 profile；
 6. soft 不制造 hard filter，hard 不静默降级；
 7. Mock/Annotation 不升级成真实硬件 exact-ID 证据；
 8. Kubernetes Binding 不描述为整组原子提交；
@@ -1735,8 +1748,9 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 - process-scoped topology manager 与 per-Session plugin 生命周期分离；`OnSessionClose` 不停止 Provider/cache；
 - scheduler planner 拥有最终 DeviceKeys 选择权；Provider 不提供 chooser，只做 selected-key 校验/消费；
 - Group planner 先作为 allocate 内部集成，不新增通用组规划注册 API；
-- Alpha 的首个 Provider 目标为 NVIDIA，resource 为 `nvidia.com/gpu`；XPU-01 使用 nvml-mock 验证 selected DeviceKey、annotation
-  和恢复。
+- Alpha 的首个物理设备 Provider 目标为 NVIDIA；XPU-01 历史 stock 探针 resource 为 `nvidia.com/gpu`，XPU-01B 首个执行
+  profile resource 为 `volcano.sh/vgpu-number`，使用单槽位 vGPU 插件验证 selected DeviceKey、API Pod annotation、deviceshare
+  和注入 UUID。`nvidia.com/gpu` stock exact-ID 是独立后续研究。
 
 ### 12.3 仍需社区评审的 P0/P1 问题
 
@@ -1754,7 +1768,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 - topology-aware victim selection；
 - DRA claim selector 和 ResourceSlice Provider；
-- MIG/vGPU/shared geometry；
+- MIG/任意 vGPU split/shared geometry；
 - cluster-scoped Fabric authority；
 - link-aware ring/collective communication planning；
 
@@ -1843,7 +1857,7 @@ soft policy 的 topology data/provider 不可用时只失去相应 preference，
 
 后续研究
   topology-aware victim selection
-  DRA/MIG/vGPU/shared-geometry
+  DRA/MIG/arbitrary-vGPU-split/shared-geometry
   cluster-scoped Fabric authority
 ~~~
 

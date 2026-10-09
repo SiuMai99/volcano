@@ -9,11 +9,16 @@
 > M1/M2 基线：[M1/M2 Advisory MVP 开发计划](./104-generic-xpu-topology-aware-m1-m2-advisory-mvp-development-plan-zh-v4.md)与
 > [M2 安装及运行证据](./105-generic-xpu-topology-aware-m2-install-evidence-zh-v4.md)。
 >
-> 状态：**实施中，PR9 assignment contract/exact bridge probe 已启动**。计划源码复核日期：2026-09-22；PR9 开发起点：`7bc3a0e4f`。
-> 当前已开始 production assignment codec、ContainerRef request、Provider capability/Fake、probe 迁移和 API Pod writer PoC；
+> 历史状态（2026-09-22）：**实施中，PR9 assignment contract/exact bridge probe 已启动**；PR9 开发起点：`7bc3a0e4f`。
+> 当时已开始 production assignment codec、ContainerRef request、Provider capability/Fake、probe 迁移和 API Pod writer PoC。
+> 截至 2026-10-01，本地 PR9/10/11 已分别落地合同 PoC、纯 planner 和 winning Statement feasibility 集成；
 > 尚无 exact-ready L1 profile，hard no-Bind 不变。
 > 本文描述 M3 的开发边界和验收门槛，不表示 hard topology、scheduler-selected DeviceKey、Pod assignment、Pod-derived anchor 或
 > runtime UUID 已经实现。M1/M2 的 hard no-Bind guard 在 M3 全部放行条件满足前必须继续生效。
+>
+> XPU-01B 决策更新（2026-10-01）：首个执行 profile 改为复用现有 Volcano deviceshare 与
+> `volcano-vgpu-device-plugin` 的 [`volcano-vgpu-s1` 后端](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
+> kubelet 虚拟槽位 ID 与 planner 的物理 GPU UUID 分账核对；下文工作包的原始 PR 编号仍保留历史顺序。此决策尚未提供新 L1 证据。
 
 ## 1. M3 结论与交付边界
 
@@ -49,9 +54,10 @@ hard typed policy
 
 ### 1.2 M3 仍不能声明的能力
 
-- 不提供跨系统 reservation、release、reconcile owner 或 DeviceKey allocation ledger；
+- 不新增跨系统 reservation、release、reconcile owner 或第二份 DeviceKey allocation ledger；`volcano-vgpu-s1` 复用现有 deviceshare 物理卡账；
 - 不提供多 Pod 原子 Bind、原子 unbind、workload 同时启动屏障或 Kubernetes 外部事务；
-- 不支持 DRA、MIG、vGPU/shared/fractional geometry，也不把 HAMi 私有 annotation 当作 generic assignment；
+- 不支持 DRA、MIG、任意 vGPU split/shared/fractional geometry；首个 `volcano-vgpu-s1` 只复用 vGPU 单槽位执行后端，
+  私有 annotation 必须与 scheduler-owned generic assignment 校验一致，不能取代它；
 - 不提供 topology-aware preempt/reclaim victim selection；
 - 不从 HyperNode、普通网络标签或设备数量推导 Fabric/DeviceKey；
 - 不把 nvml-mock、Pod Running、Node placement 或 kubelet 任意 DeviceID 写成真实 runtime exact UUID 证据；
@@ -73,7 +79,7 @@ hard typed policy
 | bind worker | `AddBindTask()` 单项入队；`executePreBinds()` 对每个 context 执行并保留成功项 | 保持逐 Pod 非原子边界；assignment 写入/校验失败的 Task 不能进入 Bind，不能宣传整组原子回滚 |
 | backfill | 直接 `Session.Allocate()`，ready 后 dispatch | hard policy 必须经过同一 planner/assignment/final guard，无法形成 complete Group plan 时阻断 |
 | recovery | 当前没有 production `xpu-assignment` writer/parser 或 Pod-derived anchor | Session open 需要只读已绑定 Pod，校验 assignment、NodeUID、ContainerRef 和当前 topology 后恢复 anchor |
-| Provider | Annotation Provider 只发布 topology facts；stock NVIDIA Device Plugin 不确认 scheduler-selected UUID | XPU-01B 必须交付 exact-capable bridge 或明确保持 hard Pending |
+| Provider | Annotation Provider 只发布 topology facts；stock NVIDIA Device Plugin 不确认 scheduler-selected UUID；现有 vGPU Adapter 的用户 allowlist 尚未接入 xPU winner | XPU-01B 用 `volcano-vgpu-s1` 闭合 selected UUID、deviceshare、插件注入与虚拟槽位计数，未通过则 hard Pending |
 
 ### 2.1 当前提交和 Bind 调用链
 
@@ -102,18 +108,22 @@ M3 必须同时覆盖两条链。只在 `Statement.Commit()` 增加检查无法�
 
 ## 3. 编码前必须冻结的四个合同
 
-### 3.1 G1：XPU-01B exact bridge 是 hard 放行门
+### 3.1 G1：XPU-01B vGPU 执行 bridge 是 hard 放行门
 
-stock NVIDIA Device Plugin 的 `ListAndWatch`、`GetPreferredAllocation` 和 `Allocate` 不能证明 Volcano 选择的 UUID 等于 kubelet 最终
-`DevicesIds`。M3 可以在 Fake/Mock Provider 上开发 planner，但生产配置的 `AssignmentContractReady` 只有在一个明确命名的 Provider profile
-同时满足以下条件后才能置为 `true`：
+stock NVIDIA Device Plugin 的 `ListAndWatch`、`GetPreferredAllocation` 和 `Allocate` 不能证明 Volcano 选择的 UUID 得以执行。
+首个 profile 选择 [`volcano-vgpu-s1`](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)：
+`volcano.sh/vgpu-number` 为目标扩展资源，`deviceSplitCount=1` 在插件和 node config 中一致，planner 的 DeviceKey 表示物理 GPU UUID，
+kubelet `DevicesIds` 表示虚拟槽位 ID。M3 可以在 Fake/Mock Provider 上开发 planner，但生产配置的 `AssignmentContractReady` 只有在该
+profile 同时满足以下条件后才能置为 `true`：
 
 1. 接受 scheduler-selected `NodeUID + DeviceKey + ContainerRef + ResourceName`；
-2. 只校验/消费 selected keys，不重新选择另一个 DeviceID；
+2. deviceshare 与 vGPU 插件消费/校验 selected 物理 UUID，不重新选择另一个物理 GPU；
 3. assignment 在 kubelet 分配前已持久化到真实 API Pod；
 4. Provider 无法确认、设备已占用、NodeUID/health/generation 改变时 fail closed；
-5. L1 至少证明 `selected DeviceKey == bridge accepted key == kubelet DevicesIds`；
-6. L2 若可用，再证明 runtime-visible UUID 与 PodUID、ContainerRef、ResourceName、NodeUID、DeviceKeys 一致。
+5. L1 在同一 Pod/Container 上证明 `selected 物理 UUID == API Pod assignment UUID == deviceshare 分配 UUID == 插件注入 UUID`；
+   kubelet `Allocate.DevicesIds`/PodResources 单独记录虚拟槽位 ID，按 Pod/Container/资源核对数量及生命周期，**不要求 ID 字面相等**；
+6. 同卡独占、Pod/Container 关联、并发和恢复均有负例；数量一致本身不能证明物理身份；
+7. L2 若可用，再证明 runtime-visible 物理 UUID 与 PodUID、ContainerRef、ResourceName、NodeUID、DeviceKeys 一致。
 
 在 XPU-01B 未完成时允许合入的只有默认关闭的纯 planner、parser、Fake 和不放行 hard Bind 的集成骨架。
 
@@ -128,7 +138,7 @@ M2 请求合同允许多个容器存在，并允许一个 Pod 对不同目标 re
   "assignments": [
     {
       "container": {"kind": "regular", "name": "worker"},
-      "resourceName": "nvidia.com/gpu",
+      "resourceName": "volcano.sh/vgpu-number",
       "provider": "nvidia-nvml-v1",
       "deviceKeys": ["<node-uid>/GPU-aaaaaaaa"]
     }
@@ -224,7 +234,7 @@ flowchart TB
 | compiled hard policy、AdmissionSet、plan、tentative DeviceKey 使用、Pod-derived anchor | xPU Session plugin | 单 Session |
 | assignment annotation | scheduler 写入的 API Pod metadata | Pod 生命周期；跨 Session 恢复输入 |
 | Node/CPU/memory/scalar resource accounting | 现有 NodeInfo/Statement | 现有 scheduler 事务 |
-| kubelet/runtime DeviceID | exact-capable bridge + kubelet/runtime | 外部执行事实；不由 PodGroup status 代替 |
+| kubelet 虚拟槽位 ID / runtime 物理 UUID | kubelet/PodResources 与 vGPU 插件/runtime，分别记录 | 外部执行事实；不由 PodGroup status 或另一套 ID 代替 |
 
 ## 5. 工作包与实施顺序
 
@@ -237,12 +247,13 @@ flowchart TB
 - 将 `tools/xpu-01` 的 probe-only payload 迁移为 canonical assignment envelope，增加 ContainerRef/multi-resource/strict decode 反例；
 - 定义 process-scoped `XPUAssignmentProvider` 最小接口：identity、capabilities、selected-key validation/consumption；
 - 明确 API Pod writer 的 owner、RBAC、resourceVersion conflict 和重试边界；
-- 选择并记录首个 exact bridge 机制；不能把 stock Device Plugin 的数量接口当成机制；
-- 输出 capability matrix：enumerate、select、validate、persist、kubelet confirm、runtime reconcile 分列；
+- 将 `volcano-vgpu-s1` 作为首个 bridge，明确 xPU winner 到 deviceshare 的选卡接缝、Pod/Container 关联和插件消费路径；
+- 输出 capability matrix：enumerate、physical select、validate/consume、persist、virtual-slot accounting、physical injection、runtime reconcile 分列；
 - 保持 Annotation Provider 只负责 topology facts，不让 workload identity 获得 Node patch 权限。
 
-**完成条件**：至少 L0/Fake 全矩阵通过，并有一个明确命名的 L1 exact profile 证明 selected key、持久化 assignment 和 kubelet DeviceID
-一致；否则本工作包只能标记 `Blocked`，M3 hard 继续 no-Bind。
+**完成条件**：至少 L0/Fake 全矩阵通过，并有 `volcano-vgpu-s1` L1 证据证明同一 Pod/Container 的 selected 物理 UUID、
+API Pod assignment、deviceshare 占用和插件注入一致，kubelet 虚拟槽位数量账与其分别对齐；否则本工作包只能标记 `Blocked`，
+M3 hard 继续 no-Bind。具体改码顺序和负例见 [XPU-01B 计划](./108-generic-xpu-topology-aware-xpu-01b-volcano-vgpu-s1-development-plan-zh-v4.md)。
 
 ### 5.2 XPU-08：side-effect-free Group planner
 
@@ -379,7 +390,7 @@ ContainerRef/request、Provider identity/capability、assignment persistence 结
 | ID | 场景 | 必须断言 |
 | --- | --- | --- |
 | M3-01 | bridge 未就绪 | `AssignmentContractReady=false`，hard 无 Bind，reason=`XPUAssignmentNotEnforceable` |
-| M3-02 | exact bridge 正例 | selected DeviceKey、persisted assignment、bridge accepted key、kubelet DeviceID 一致；L2 未运行时明确标注 |
+| M3-02 | `volcano-vgpu-s1` exact bridge 正例 | 一节点两卡选非默认 GPU-B；selected/API Pod/deviceshare/插件注入物理 UUID 一致；`Allocate.DevicesIds`/PodResources 虚拟槽位按 Pod/Container/资源计数对账；L2 未运行时明确标注 |
 | M3-03 | request/ContainerRef | regular/init/restartable-init 唯一消费者正确持久化；重复消费者、request-only、分数、limit mismatch 拒绝 |
 | M3-04 | Pod+Node / Group+Node | Pod 可选不同 local domain；Group 固定一个 LocalDomainKey |
 | M3-05 | Pod+Fabric / Group+Fabric | 只使用显式 Fabric；Group 跨 Node/wave 保持同一 FabricKey |
@@ -430,7 +441,7 @@ git diff --check
 2. scheduler 对 Pod metadata 和 `podgroups/status` 的最小 RBAC；
 3. direct PodGroup hard policy 经 API server round-trip 后未被 prune；
 4. final assignment 的 API Pod GET 输出、NodeName、PodUID、ContainerRef、ResourceName、NodeUID-safe DeviceKeys；
-5. bridge accepted key、kubelet `DevicesIds`，以及可用时的 runtime UUID；
+5. deviceshare 实际物理 UUID、vGPU 私有 annotation、插件注入 UUID、kubelet `Allocate.DevicesIds` 与 PodResources 虚拟槽位 ID/数量，以及可用时的 runtime UUID；
 6. cross-wave/Session restart 的 anchor 恢复结果；
 7. assignment 缺失、冲突、Node replacement、bridge mismatch、backfill bypass 负例；
 8. 普通 workload/M2 soft 回归和 hard no silent fallback。
@@ -470,8 +481,9 @@ exact profile 放行条件后，才可把对应 Provider 的 hard Alpha 标记�
 | trial Statement 写 API/调用 Provider/修改持久状态 | 停止 XPU-09；副作用只能发生在 winner final path |
 | Save/Recover 后沿用 trial DeviceKeys | final winner 重新规划和 revalidate；补 stale snapshot/nomination 反例 |
 | backfill 可在无 assignment 时 Bind hard Task | M3 不放行；将同一 final guard 放到 `Session.Allocate/dispatch` 或更靠近 AddBindTask 的核心路径 |
-| exact 实现要求外部 reservation/ledger/batch Bind | 另立后续需求；不得偷偷扩大 M3 Alpha 或宣称原子性 |
-| 普通 GPU Pod 占用的具体 DeviceID 不可见且 bridge 无法确认可用性 | 对该 Provider/profile 保持 hard Pending，或把可执行 profile 限制到有权威 selected-key 确认的受管资源池 |
+| exact 实现要求另建 reservation/ledger/batch Bind | 另立后续需求；本 profile 只复用现有 deviceshare 账，不得偷偷扩大 M3 Alpha 或宣称原子性 |
+| 普通 `nvidia.com/gpu` Pod 与 vGPU profile 共用物理卡而占用不可见 | 对该 profile 保持 hard Pending；先建立独占的受管资源池及可核对的物理卡账 |
+| 只有虚拟槽位数量相等，Pod 关联或物理注入 UUID 无法确认 | `AssignmentContractReady=false`，补确定性关联和负例；不得据计数放行 |
 | policy semantic mutation 与已绑定 anchor 冲突 | 按冻结 D6 拒绝 mutation/delete；不迁移已绑定 Pod，不创建第二个 anchor |
 | Node 同名换 UID 后旧 assignment 仍被接受 | M3 不放行；NodeUID/DeviceKey final guard 和 recovery 必须同时失败 |
 
@@ -483,7 +495,7 @@ exact profile 放行条件后，才可把对应 Provider 的 hard Alpha 标记�
 - 不接管 kubelet scalar accounting，不在 topology cache 再扣一份普通 Node resource；
 - 不实现 Provider 动态切换、catalog 热更新、active-active fencing、升级/drain/回滚状态机；
 - 不支持 VCJob、Deployment、StatefulSet、bare Pod 的新 topology authoring ergonomic source；
-- 不实现 DRA/MIG/vGPU/shared geometry、动态 Fabric 推导、通信 ring 优化或 topology-aware victim selection；
+- 不实现 DRA/MIG/任意 vGPU split/shared/fractional geometry、动态 Fabric 推导、通信 ring 优化或 topology-aware victim selection；
 - 不把真实硬件、性能和发布运维的未运行项写成 M3 已验证；这些属于 M4/XPU-16～18。
 
 ## 12. M3 完成条件
@@ -491,7 +503,8 @@ exact profile 放行条件后，才可把对应 Provider 的 hard Alpha 标记�
 只有同时满足以下条件，才可以标记 M3 完成：
 
 1. XPU-08/09/11/13/14 的代码、测试和文档全部落地，M3-01～M3-19 有可追踪结果；
-2. 至少一个明确命名的 exact-capable Provider profile 通过 selected DeviceKey、API Pod assignment、kubelet DeviceID 的 L1 对账；
+2. `volcano-vgpu-s1` 通过 selected 物理 DeviceKey、API Pod assignment、deviceshare/插件注入物理 UUID 的 L1 对账，
+   并另行通过 kubelet 虚拟槽位的 Pod/Container 数量与生命周期对账；
 3. hard policy 在 bridge/writer/readiness 任一缺失时仍 fail closed，无 allocate/backfill/nomination/Bind 旁路；
 4. Group hard 在跨 wave/Session restart 后从 bound Pods 恢复相同 LocalDomain/Fabric anchor；
 5. 普通 workload 和 M2 soft 回归通过；默认安装仍关闭该 Alpha；
