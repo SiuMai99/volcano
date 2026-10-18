@@ -91,6 +91,29 @@ func (f *FitErrors) SetNodeError(nodeName string, err error) {
 	f.nodes[nodeName] = fe
 }
 
+// HasOnlyUnschedulableNodeErrors verifies that a failed node scan covered the
+// supplied scope and found no plugin errors or other non-placement statuses.
+func (f *FitErrors) HasOnlyUnschedulableNodeErrors(nodes []*NodeInfo) bool {
+	if f == nil || len(nodes) == 0 || len(f.nodes) != len(nodes) {
+		return false
+	}
+	for _, node := range nodes {
+		if node == nil {
+			return false
+		}
+		fit, found := f.nodes[node.Name]
+		if !found || fit == nil || len(fit.Status) == 0 {
+			return false
+		}
+		for _, status := range fit.Status {
+			if status == nil || (status.Code != Unschedulable && status.Code != UnschedulableAndUnresolvable) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // GetUnschedulableAndUnresolvableNodes returns the set of nodes that has no help from preempting pods from it
 func (f *FitErrors) GetUnschedulableAndUnresolvableNodes() map[string]sets.Empty {
 	ret := make(map[string]sets.Empty)

@@ -18,17 +18,20 @@ package allocate
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
 
 	schedulingv1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	"volcano.sh/volcano/cmd/scheduler/app/options"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/plugins/predicates"
 	"volcano.sh/volcano/pkg/scheduler/uthelper"
 	"volcano.sh/volcano/pkg/scheduler/util"
+	commonutil "volcano.sh/volcano/pkg/util"
 )
 
 func fragmentationTask(gpu float64) *api.TaskInfo {
@@ -92,6 +95,89 @@ func TestDiagnoseGPUFragmentationWithPredicatesPlugin(t *testing.T) {
 	want := &gpuFragmentationDiagnosis{Requested: 4, CandidateNodes: 3, TotalFree: 4, MaxFree: 2}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("diagnosis = %+v, want %+v", got, want)
+	}
+}
+
+func TestAllocateGPUFragmentationMessage(t *testing.T) {
+	previousShardingMode := options.ServerOpts.ShardingMode
+	options.ServerOpts.ShardingMode = commonutil.NoneShardingMode
+	defer func() { options.ServerOpts.ShardingMode = previousShardingMode }()
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		want    bool
+	}{
+		{name: "enabled", enabled: true, want: true},
+		{name: "disabled", enabled: false, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := util.BuildPod("ns", "gpu-pod", "", v1.PodPending,
+				api.BuildResourceList("1", "1Gi", api.ScalarResource{Name: api.GPUResourceName, Value: "4"}),
+				"pg", nil, map[string]string{"pool": "gpu"})
+			test := uthelper.TestCommonStruct{
+				Plugins: map[string]framework.PluginBuilder{predicates.PluginName: predicates.New},
+				Pods:    []*v1.Pod{pod},
+				PodGroups: []*schedulingv1.PodGroup{
+					util.BuildPodGroup("pg", "ns", "queue", 1, nil, schedulingv1.PodGroupInqueue),
+				},
+				Queues: []*schedulingv1.Queue{util.BuildQueue("queue", 1, nil)},
+			}
+			for _, name := range []string{"n1", "n2", "n3"} {
+				test.Nodes = append(test.Nodes, util.BuildNode(name,
+					api.BuildResourceList("4", "8Gi", api.ScalarResource{Name: api.GPUResourceName, Value: "8"}, api.ScalarResource{Name: "pods", Value: "10"}),
+					map[string]string{"pool": "gpu"}))
+			}
+			yes := true
+			ssn := test.RegisterSession([]conf.Tier{{Plugins: []conf.PluginOption{{Name: predicates.PluginName, EnabledPredicate: &yes}}}},
+				[]conf.Configuration{{Name: "allocate", Arguments: map[string]interface{}{conf.GPUFragmentationDiagnosisEnableKey: tc.enabled}}})
+			defer test.Close()
+			for name, free := range map[string]float64{"n1": 1, "n2": 2, "n3": 1} {
+				ssn.Nodes[name].Idle.SetScalar(v1.ResourceName(api.GPUResourceName), free*gpuMilliPerCard)
+			}
+			test.Run([]framework.Action{New()})
+			var task *api.TaskInfo
+			var job *api.JobInfo
+			for _, item := range ssn.Jobs {
+				job = item
+				for _, candidate := range item.Tasks {
+					task = candidate
+				}
+			}
+			if job == nil || task == nil {
+				t.Fatal("missing scheduled job or task")
+			}
+			reason, msg, _ := job.TaskSchedulingReason(task.UID)
+			if reason != api.PodReasonUnschedulable {
+				t.Fatalf("reason = %q, want Unschedulable", reason)
+			}
+			hasDiagnosis := strings.Contains(msg, "GPU fragmentation across nodes: pod requests 4 nvidia.com/gpu; 3 otherwise-eligible nodes have 4 GPUs free in total, but at most 2 on any one node")
+			if hasDiagnosis != tc.want {
+				t.Fatalf("diagnosis present = %v, want %v; message: %s", hasDiagnosis, tc.want, msg)
+			}
+			if task.Status != api.Pending {
+				t.Fatalf("task status = %s, want Pending", task.Status)
+			}
+		})
+	}
+}
+
+func TestCompleteGPUFragmentationNodeScope(t *testing.T) {
+	all := []*api.NodeInfo{{Name: "n1"}, {Name: "n2"}}
+	for _, tc := range []struct {
+		name  string
+		nodes []*api.NodeInfo
+		want  bool
+	}{
+		{name: "complete", nodes: []*api.NodeInfo{{Name: "n2"}, {Name: "n1"}}, want: true},
+		{name: "missing", nodes: []*api.NodeInfo{{Name: "n1"}}},
+		{name: "duplicate", nodes: []*api.NodeInfo{{Name: "n1"}, {Name: "n1"}}},
+		{name: "unknown", nodes: []*api.NodeInfo{{Name: "n1"}, {Name: "n3"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := completeGPUFragmentationNodeScope(tc.nodes, all); got != tc.want {
+				t.Fatalf("complete scope = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -97,14 +97,17 @@ func (w *SubJobWorksheet) Clone() *SubJobWorksheet {
 type Action struct {
 	session *framework.Session
 	// configured flag for error cache
-	enablePredicateErrorCache bool
+	enablePredicateErrorCache         bool
+	enableGPUFragmentationDiagnosis   bool
+	gpuFragmentationDiagnosisMaxNodes int
 
 	recorder *Recorder
 }
 
 func New() *Action {
 	return &Action{
-		enablePredicateErrorCache: true, // default to enable it
+		enablePredicateErrorCache:         true, // default to enable it
+		gpuFragmentationDiagnosisMaxNodes: 512,
 	}
 }
 
@@ -117,6 +120,8 @@ func (alloc *Action) Initialize() {}
 func (alloc *Action) parseArguments(ssn *framework.Session) {
 	arguments := framework.GetArgOfActionFromConf(ssn.Configurations, alloc.Name())
 	arguments.GetBool(&alloc.enablePredicateErrorCache, conf.EnablePredicateErrCacheKey)
+	arguments.GetBool(&alloc.enableGPUFragmentationDiagnosis, conf.GPUFragmentationDiagnosisEnableKey)
+	arguments.GetInt(&alloc.gpuFragmentationDiagnosisMaxNodes, conf.GPUFragmentationDiagnosisMaxNodesKey)
 }
 
 func (alloc *Action) Execute(ssn *framework.Session) {
@@ -809,6 +814,14 @@ func (alloc *Action) allocateResourcesForTasks(subJob *api.SubJobInfo, tasks *ut
 		}
 
 		if len(predicateNodes) == 0 {
+			if alloc.enableGPUFragmentationDiagnosis && fitErrors != nil && fitErrors.HasOnlyUnschedulableNodeErrors(nodes) &&
+				!job.ContainsNetworkTopology() && job.JobFitErrors == "" && task.Pod.Status.NominatedNodeName == "" &&
+				hyperNode == framework.ClusterTopHyperNode && options.ServerOpts.ShardingMode == commonutil.NoneShardingMode &&
+				ssn.SupportsGPUFragmentationDiagnosis() && completeGPUFragmentationNodeScope(nodes, ssn.NodeList) {
+				if diagnosis := diagnoseGPUFragmentation(task, nodes, alloc.gpuFragmentationDiagnosisMaxNodes, ssn.GPUFragmentationPredicate); diagnosis != nil {
+					fitErrors.SetError(diagnosis.Message())
+				}
+			}
 			// TODO: Need to add PostFilter extension point implementation here. For example, the DRA plugin includes the PostFilter extension point,
 			// but the DRA's PostFilter only occurs in extreme error conditions: Suppose a pod uses two claims. In the first scheduling attempt,
 			// a node is picked and PreBind manages to update the first claim so that it is allocated and reserved for the pod.

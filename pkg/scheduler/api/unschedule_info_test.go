@@ -23,6 +23,32 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
+func TestFitErrorsHasOnlyUnschedulableNodeErrors(t *testing.T) {
+	nodes := []*NodeInfo{{Name: "n1"}, {Name: "n2"}}
+	task := &TaskInfo{Name: "pod", Namespace: "ns"}
+	for _, tc := range []struct {
+		name       string
+		secondCode int
+		missing    bool
+		want       bool
+	}{
+		{name: "complete placement failures", secondCode: UnschedulableAndUnresolvable, want: true},
+		{name: "plugin error", secondCode: Error},
+		{name: "missing node", missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := NewFitErrors()
+			errs.SetNodeError("n1", NewFitErrWithStatus(task, nodes[0], &Status{Code: Unschedulable, Reason: "insufficient GPU"}))
+			if !tc.missing {
+				errs.SetNodeError("n2", NewFitErrWithStatus(task, nodes[1], &Status{Code: tc.secondCode, Reason: "failed"}))
+			}
+			if got := errs.HasOnlyUnschedulableNodeErrors(nodes); got != tc.want {
+				t.Fatalf("complete unschedulable evidence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 const (
 	affinityRulesNotMatch        = "node(s) didn't match pod affinity rules"
 	existingAntiAffinityNotMatch = "node(s) didn't satisfy existing pods anti-affinity rules"
