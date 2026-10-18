@@ -17,6 +17,7 @@ limitations under the License.
 package allocate
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,11 +29,20 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/framework"
+	"volcano.sh/volcano/pkg/scheduler/plugins/gang"
 	"volcano.sh/volcano/pkg/scheduler/plugins/predicates"
 	"volcano.sh/volcano/pkg/scheduler/uthelper"
 	"volcano.sh/volcano/pkg/scheduler/util"
 	commonutil "volcano.sh/volcano/pkg/util"
 )
+
+type unsupportedFragmentationPredicate struct{}
+
+func (*unsupportedFragmentationPredicate) Name() string { return "unsupported-fragmentation-predicate" }
+func (p *unsupportedFragmentationPredicate) OnSessionOpen(ssn *framework.Session) {
+	ssn.AddPredicateFn(p.Name(), func(*api.TaskInfo, *api.NodeInfo) error { return nil })
+}
+func (*unsupportedFragmentationPredicate) OnSessionClose(*framework.Session) {}
 
 func fragmentationTask(gpu float64) *api.TaskInfo {
 	return &api.TaskInfo{
@@ -103,12 +113,34 @@ func TestAllocateGPUFragmentationMessage(t *testing.T) {
 	options.ServerOpts.ShardingMode = commonutil.NoneShardingMode
 	defer func() { options.ServerOpts.ShardingMode = previousShardingMode }()
 	for _, tc := range []struct {
-		name    string
-		enabled bool
-		want    bool
+		name         string
+		enabled      bool
+		want         bool
+		free         map[string]float64
+		n2LowCPU     bool
+		n2WrongPool  bool
+		n2Tainted    bool
+		maxNodes     int
+		cacheEnabled bool
+		customPlugin bool
+		expectPlaced bool
+		releaseN1    float64
+		pgPending    bool
+		minAvailable int32
 	}{
 		{name: "enabled", enabled: true, want: true},
 		{name: "disabled", enabled: false, want: false},
+		{name: "insufficient total", enabled: true, free: map[string]float64{"n1": 1, "n2": 1, "n3": 1}},
+		{name: "CPU blocks middle node", enabled: true, n2LowCPU: true},
+		{name: "node selector blocks middle node", enabled: true, n2WrongPool: true},
+		{name: "taint blocks middle node", enabled: true, n2Tainted: true},
+		{name: "scan budget exceeded", enabled: true, maxNodes: 2},
+		{name: "predicate cache unsupported", enabled: true, cacheEnabled: true},
+		{name: "custom predicate unsupported", enabled: true, customPlugin: true},
+		{name: "one node fits normally", enabled: true, free: map[string]float64{"n1": 4, "n2": 1, "n3": 1}, expectPlaced: true},
+		{name: "future capacity is not current fragmentation", enabled: true, releaseN1: 3},
+		{name: "queue admission pending", enabled: true, pgPending: true},
+		{name: "Gang only pending", enabled: true, minAvailable: 2, free: map[string]float64{"n1": 4, "n2": 1, "n3": 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := util.BuildPod("ns", "gpu-pod", "", v1.PodPending,
@@ -117,24 +149,77 @@ func TestAllocateGPUFragmentationMessage(t *testing.T) {
 			test := uthelper.TestCommonStruct{
 				Plugins: map[string]framework.PluginBuilder{predicates.PluginName: predicates.New},
 				Pods:    []*v1.Pod{pod},
-				PodGroups: []*schedulingv1.PodGroup{
-					util.BuildPodGroup("pg", "ns", "queue", 1, nil, schedulingv1.PodGroupInqueue),
-				},
-				Queues: []*schedulingv1.Queue{util.BuildQueue("queue", 1, nil)},
+				Queues:  []*schedulingv1.Queue{util.BuildQueue("queue", 1, nil)},
 			}
+			minAvailable := tc.minAvailable
+			if minAvailable == 0 {
+				minAvailable = 1
+			}
+			phase := schedulingv1.PodGroupInqueue
+			if tc.pgPending {
+				phase = schedulingv1.PodGroupPending
+			}
+			test.PodGroups = []*schedulingv1.PodGroup{util.BuildPodGroup("pg", "ns", "queue", minAvailable, nil, phase)}
 			for _, name := range []string{"n1", "n2", "n3"} {
-				test.Nodes = append(test.Nodes, util.BuildNode(name,
+				pool := "gpu"
+				if name == "n2" && tc.n2WrongPool {
+					pool = "cpu"
+				}
+				node := util.BuildNode(name,
 					api.BuildResourceList("4", "8Gi", api.ScalarResource{Name: api.GPUResourceName, Value: "8"}, api.ScalarResource{Name: "pods", Value: "10"}),
-					map[string]string{"pool": "gpu"}))
+					map[string]string{"pool": pool})
+				if name == "n2" && tc.n2Tainted {
+					node.Spec.Taints = []v1.Taint{{Key: "dedicated", Value: "other", Effect: v1.TaintEffectNoSchedule}}
+				}
+				test.Nodes = append(test.Nodes, node)
 			}
 			yes := true
-			ssn := test.RegisterSession([]conf.Tier{{Plugins: []conf.PluginOption{{Name: predicates.PluginName, EnabledPredicate: &yes}}}},
-				[]conf.Configuration{{Name: "allocate", Arguments: map[string]interface{}{conf.GPUFragmentationDiagnosisEnableKey: tc.enabled}}})
+			pluginArgs := map[string]interface{}{}
+			if tc.cacheEnabled {
+				pluginArgs[predicates.CachePredicate] = true
+			}
+			actionArgs := map[string]interface{}{conf.GPUFragmentationDiagnosisEnableKey: tc.enabled}
+			if tc.maxNodes != 0 {
+				actionArgs[conf.GPUFragmentationDiagnosisMaxNodesKey] = tc.maxNodes
+			}
+			pluginOptions := []conf.PluginOption{{Name: predicates.PluginName, EnabledPredicate: &yes, Arguments: pluginArgs}}
+			if tc.minAvailable > 1 {
+				test.Plugins[gang.PluginName] = gang.New
+				pluginOptions = append([]conf.PluginOption{{
+					Name: gang.PluginName, EnabledJobReady: &yes, EnabledSubJobReady: &yes,
+					EnabledJobPipelined: &yes, EnabledSubJobPipelined: &yes,
+				}}, pluginOptions...)
+			}
+			if tc.customPlugin {
+				test.Plugins["unsupported-fragmentation-predicate"] = func(framework.Arguments) framework.Plugin {
+					return &unsupportedFragmentationPredicate{}
+				}
+				pluginOptions = append(pluginOptions, conf.PluginOption{Name: "unsupported-fragmentation-predicate", EnabledPredicate: &yes})
+			}
+			ssn := test.RegisterSession([]conf.Tier{{Plugins: pluginOptions}},
+				[]conf.Configuration{{Name: "allocate", Arguments: actionArgs}})
 			defer test.Close()
-			for name, free := range map[string]float64{"n1": 1, "n2": 2, "n3": 1} {
+			freeByNode := tc.free
+			if freeByNode == nil {
+				freeByNode = map[string]float64{"n1": 1, "n2": 2, "n3": 1}
+			}
+			for name, free := range freeByNode {
 				ssn.Nodes[name].Idle.SetScalar(v1.ResourceName(api.GPUResourceName), free*gpuMilliPerCard)
 			}
-			test.Run([]framework.Action{New()})
+			if tc.n2LowCPU {
+				ssn.Nodes["n2"].Idle.MilliCPU = 0
+			}
+			if tc.releaseN1 > 0 {
+				ssn.Nodes["n1"].Releasing.SetScalar(v1.ResourceName(api.GPUResourceName), tc.releaseN1*gpuMilliPerCard)
+			}
+			if tc.pgPending {
+				previousActions := conf.EnabledActionMap
+				conf.EnabledActionMap = map[string]bool{"enqueue": true, "allocate": true}
+				defer func() { conf.EnabledActionMap = previousActions }()
+				New().Execute(ssn)
+			} else {
+				test.Run([]framework.Action{New()})
+			}
 			var task *api.TaskInfo
 			var job *api.JobInfo
 			for _, item := range ssn.Jobs {
@@ -147,12 +232,24 @@ func TestAllocateGPUFragmentationMessage(t *testing.T) {
 				t.Fatal("missing scheduled job or task")
 			}
 			reason, msg, _ := job.TaskSchedulingReason(task.UID)
+			if tc.expectPlaced {
+				if task.Status == api.Pending || strings.Contains(msg, "GPU fragmentation across nodes") {
+					t.Fatalf("expected normal placement, got status=%s message=%s", task.Status, msg)
+				}
+				return
+			}
 			if reason != api.PodReasonUnschedulable {
 				t.Fatalf("reason = %q, want Unschedulable", reason)
 			}
 			hasDiagnosis := strings.Contains(msg, "GPU fragmentation across nodes: pod requests 4 nvidia.com/gpu; 3 otherwise-eligible nodes have 4 GPUs free in total, but at most 2 on any one node")
 			if hasDiagnosis != tc.want {
 				t.Fatalf("diagnosis present = %v, want %v; message: %s", hasDiagnosis, tc.want, msg)
+			}
+			if tc.releaseN1 > 0 {
+				if task.Status != api.Pipelined {
+					t.Fatalf("task status = %s, want Pipelined", task.Status)
+				}
+				return
 			}
 			if task.Status != api.Pending {
 				t.Fatalf("task status = %s, want Pending", task.Status)
@@ -262,5 +359,21 @@ func TestDiagnoseGPUFragmentation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkDiagnoseGPUFragmentation512Nodes(b *testing.B) {
+	task := fragmentationTask(4)
+	nodes := make([]*api.NodeInfo, 512)
+	for i := range nodes {
+		nodes[i] = fragmentationNode(fmt.Sprintf("gpu-node-%d", i), 0)
+	}
+	predicate := func(*api.TaskInfo, *api.NodeInfo) (bool, bool) { return true, true }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := diagnoseGPUFragmentation(task, nodes, 512, predicate); got != nil {
+			b.Fatalf("unexpected diagnosis: %+v", got)
+		}
 	}
 }

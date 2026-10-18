@@ -1,6 +1,6 @@
 # Pending GPU 作业的节点间碎片化诊断开发计划
 
-> 状态：开发计划草案（尚未实现）
+> 状态：三个叠加 PR 的开发计划，首版实现已提交，待审查合并
 >
 > 依据：[需求](gpu-pending-fragmentation-diagnosis-zh.md)与[设计方案](gpu-pending-fragmentation-design-zh.md)
 >

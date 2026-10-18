@@ -1,10 +1,10 @@
 # Pending GPU 作业的节点间碎片化诊断设计
 
-> 状态：设计草案（尚未实现）
+> 状态：首版实现已提交，待审查合并
 >
 > 依据：[需求与开发计划](gpu-pending-fragmentation-diagnosis-zh.md)
 >
-> 范围：Volcano 调度器；首版仅诊断单个 Pod 的整卡 `nvidia.com/gpu` 请求
+> 范围：Volcano 调度器；首版仅诊断单个 Pod 的整卡 `nvidia.com/gpu` 请求；初次实现的配置范围见[用户指南](../user-guide/how_to_diagnose_pending_gpu_fragmentation.md)
 
 > 实施拆分：[开发计划](gpu-pending-fragmentation-development-plan-zh.md)
 
