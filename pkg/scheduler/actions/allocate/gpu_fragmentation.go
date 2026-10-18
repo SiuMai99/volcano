@@ -17,6 +17,7 @@ limitations under the License.
 package allocate
 
 import (
+	"fmt"
 	"math"
 
 	v1 "k8s.io/api/core/v1"
@@ -37,6 +38,39 @@ type gpuFragmentationDiagnosis struct {
 	CandidateNodes int
 	TotalFree      int64
 	MaxFree        int64
+}
+
+func (d *gpuFragmentationDiagnosis) Message() string {
+	return fmt.Sprintf("GPU fragmentation across nodes: pod requests %d nvidia.com/gpu; %d otherwise-eligible nodes have %d GPUs free in total, but at most %d on any one node",
+		d.Requested, d.CandidateNodes, d.TotalFree, d.MaxFree)
+}
+
+// completeGPUFragmentationNodeScope prevents a partial topology or shard view
+// from being reported as a cluster-wide diagnosis.
+func completeGPUFragmentationNodeScope(nodes, all []*api.NodeInfo) bool {
+	if len(nodes) == 0 || len(nodes) != len(all) {
+		return false
+	}
+	names := make(map[string]struct{}, len(all))
+	for _, node := range all {
+		if node == nil {
+			return false
+		}
+		names[node.Name] = struct{}{}
+	}
+	if len(names) != len(all) {
+		return false
+	}
+	for _, node := range nodes {
+		if node == nil {
+			return false
+		}
+		if _, found := names[node.Name]; !found {
+			return false
+		}
+		delete(names, node.Name)
+	}
+	return len(names) == 0
 }
 
 type gpuFragmentationPredicate func(*api.TaskInfo, *api.NodeInfo) (fits, known bool)

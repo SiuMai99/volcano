@@ -19,4 +19,8 @@ package conf
 const (
 	// EnablePredicateErrCacheKey is the key whether predicate error cache is enabled
 	EnablePredicateErrCacheKey = "predicateErrorCacheEnable"
+	// GPUFragmentationDiagnosisEnableKey opt-in to whole-GPU Pending diagnosis.
+	GPUFragmentationDiagnosisEnableKey = "gpuFragmentationDiagnosisEnable"
+	// GPUFragmentationDiagnosisMaxNodesKey bounds the failure-only node scan.
+	GPUFragmentationDiagnosisMaxNodesKey = "gpuFragmentationDiagnosisMaxNodes"
 )
