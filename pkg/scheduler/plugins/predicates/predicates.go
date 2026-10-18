@@ -326,6 +326,17 @@ func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 		state := ssn.GetCycleState(task.UID)
 		return pp.Predicate(task, node, state)
 	})
+	// The diagnostic uses the same Filter chain with an isolated CycleState.
+	// Predicate caching cannot provide a complete per-node explanation.
+	if !pp.enabledPredicates.cacheEnable {
+		ssn.AddGPUFragmentationPredicateFn(pp.Name(), func(task *api.TaskInfo, node *api.NodeInfo) error {
+			state := ssn.GetCycleState(task.UID)
+			if state == nil {
+				return fmt.Errorf("missing cycle state for GPU fragmentation diagnosis")
+			}
+			return pp.Predicate(task, node, state.Clone().(*k8sframework.CycleState))
+		})
+	}
 
 	// TODO: Need to unify the plugins in nodeorder to predicates.
 	// Currently, if the volumebinding plugin crosses predicates plugins and nodeorder plugins, it involves two initializations, which increases memory overhead.
