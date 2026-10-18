@@ -95,6 +95,65 @@ func (ssn *Session) AddPredicateFn(name string, pf api.PredicateFn) {
 	ssn.predicateFns[name] = pf
 }
 
+// AddGPUFragmentationPredicateFn registers a read-only predicate evaluation for
+// diagnosing a GPU capacity failure. A plugin with a normal predicate but no
+// diagnostic predicate makes the diagnosis unavailable.
+func (ssn *Session) AddGPUFragmentationPredicateFn(name string, pf api.PredicateFn) {
+	ssn.gpuFragmentationPredicateFns[name] = pf
+}
+
+// SupportsGPUFragmentationDiagnosis requires every enabled predicate to have a
+// diagnostic counterpart. Normal predicates may stop at the first failure.
+func (ssn *Session) SupportsGPUFragmentationDiagnosis() bool {
+	seen := false
+	for _, tier := range ssn.Tiers {
+		for _, plugin := range tier.Plugins {
+			if !isEnabled(plugin.EnabledPredicate) {
+				continue
+			}
+			if _, registered := ssn.predicateFns[plugin.Name]; !registered {
+				continue
+			}
+			if ssn.gpuFragmentationPredicateFns[plugin.Name] == nil {
+				return false
+			}
+			seen = true
+		}
+	}
+	return seen
+}
+
+// GPUFragmentationPredicate returns (fits, known). Unexpected plugin statuses
+// are unknown rather than evidence that a node fails a Pod constraint.
+func (ssn *Session) GPUFragmentationPredicate(task *api.TaskInfo, node *api.NodeInfo) (bool, bool) {
+	if !ssn.SupportsGPUFragmentationDiagnosis() {
+		return false, false
+	}
+	for _, tier := range ssn.Tiers {
+		for _, plugin := range tier.Plugins {
+			if !isEnabled(plugin.EnabledPredicate) {
+				continue
+			}
+			if _, registered := ssn.predicateFns[plugin.Name]; !registered {
+				continue
+			}
+			err := ssn.gpuFragmentationPredicateFns[plugin.Name](task, node)
+			if err == nil {
+				continue
+			}
+			fitErr, ok := err.(*api.FitError)
+			if !ok || fitErr.Status.ContainsErrorSkipOrWait() {
+				return false, false
+			}
+			if fitErr.Status.ContainsUnschedulable() || fitErr.Status.ContainsUnschedulableAndUnresolvable() {
+				return false, true
+			}
+			return false, false
+		}
+	}
+	return true, true
+}
+
 // AddPrePredicateFn add PrePredicate function
 func (ssn *Session) AddPrePredicateFn(name string, pf api.PrePredicateFn) {
 	ssn.prePredicateFns[name] = pf
