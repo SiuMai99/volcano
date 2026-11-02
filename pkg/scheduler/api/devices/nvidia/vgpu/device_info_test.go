@@ -27,8 +27,57 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	"volcano.sh/volcano/pkg/scheduler/api/devices"
 	"volcano.sh/volcano/pkg/scheduler/api/devices/config"
 )
+
+func TestGPUDevicesFilterNodeScoresTrialUsage(t *testing.T) {
+	previousVGPUEnable := VGPUEnable
+	VGPUEnable = true
+	t.Cleanup(func() { VGPUEnable = previousVGPUEnable })
+
+	const (
+		gpuMemory       = 16384
+		requestedMemory = 4096
+	)
+	tests := []struct {
+		name      string
+		policy    string
+		wantScore float64
+	}{
+		{
+			name:      "binpack includes requested memory in trial score",
+			policy:    binpackPolicy,
+			wantScore: 25,
+		},
+		{
+			name:      "spread does not reward a device after trial placement",
+			policy:    spreadPolicy,
+			wantScore: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gs := makeGPUDevices("node-1", 1, gpuMemory, 4)
+			pod := makeVGPUPod("worker", "default", "worker", requestedMemory, false, "")
+
+			status, _, err := gs.FilterNode(pod, tt.policy)
+			if err != nil || status != devices.Success {
+				t.Fatalf("FilterNode() = (%d, %v), want (%d, nil)", status, err, devices.Success)
+			}
+			if got := gs.ScoreNode(pod, tt.policy); got != tt.wantScore {
+				t.Errorf("ScoreNode(%q) = %v, want %v", tt.policy, got, tt.wantScore)
+			}
+			if got := gs.Device[0].UsedNum; got != 0 {
+				t.Errorf("original GPU UsedNum = %d, want 0", got)
+			}
+			if got := gs.Device[0].UsedMem; got != 0 {
+				t.Errorf("original GPU UsedMem = %d, want 0", got)
+			}
+		})
+	}
+}
 
 func TestGetGPUMemoryOfPod(t *testing.T) {
 	testCases := []struct {

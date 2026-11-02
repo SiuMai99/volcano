@@ -1100,3 +1100,55 @@ func TestCalScore(t *testing.T) {
 		})
 	}
 }
+
+func TestAscendDevicesScoreNodeUsesCurrentUsage(t *testing.T) {
+	const requestedMemory = 4096
+	tests := []struct {
+		name       string
+		policy     string
+		used       int32
+		usedMemory int32
+		wantScore  float64
+	}{
+		{
+			name:       "binpack scores memory already in use",
+			policy:     binpackPolicy,
+			used:       1,
+			usedMemory: 8192,
+			wantScore:  25,
+		},
+		{
+			name:      "spread rewards an idle device",
+			policy:    spreadPolicy,
+			wantScore: spreadMultiplier,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			device := createTestAscendAllocateDevice("ascend-0")
+			device.DeviceInfo.Count = 2
+			device.DeviceUsage.Used = tt.used
+			device.DeviceUsage.Usedmem = tt.usedMemory
+			device.hamiVnpuCore = true
+			ads := createTestAscendDevices("node-1", "Ascend910A", map[string]*AscendDevice{
+				device.DeviceInfo.ID: device,
+			})
+			pod := createTestPod("worker", "default", map[string]string{
+				VNPUModeAnnotation: VNPUModeHamiCore,
+			})
+			pod.Spec.Containers[0].Resources.Limits = v1.ResourceList{
+				v1.ResourceName(device.config.ResourceName):       resource.MustParse("1"),
+				v1.ResourceName(device.config.ResourceMemoryName): *resource.NewQuantity(requestedMemory, resource.DecimalSI),
+			}
+
+			status, _, err := ads.FilterNode(pod, tt.policy)
+			if !assert.NoError(t, err) || !assert.Equal(t, devices.Success, status) {
+				return
+			}
+			assert.Equal(t, tt.wantScore, ads.ScoreNode(pod, tt.policy))
+			assert.Equal(t, tt.used, device.DeviceUsage.Used)
+			assert.Equal(t, tt.usedMemory, device.DeviceUsage.Usedmem)
+		})
+	}
+}
